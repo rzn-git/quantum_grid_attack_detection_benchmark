@@ -1,0 +1,89 @@
+schema: '2.0'
+stages:
+  download:
+    cmd: python -m qgridbench.data.download
+    deps:
+    - path: configs/data.yaml
+      hash: md5
+      md5: 388cf8c8aa938ea29b29c3568a61b8d8
+      size: 1891
+    - path: src/qgridbench/data/download.py
+      hash: md5
+      md5: 5e91c439d4b12ab5216cc4ed2b22b20a
+      size: 2751
+    outs:
+    - path: data/raw/binary
+      hash: md5
+      md5: 8e069c7fc4e9bab88094e3ab254fc712.dir
+      size: 81663916
+      nfiles: 15
+    - path: data/raw/multiclass
+      hash: md5
+      md5: a026b5caac8cecfb0d93db3cfd48c7e3.dir
+      size: 78963019
+      nfiles: 15
+    - path: data/raw/triple
+      hash: md5
+      md5: 5d9bf811f13819d45aef0e52f00e147c.dir
+      size: 81668321
+      nfiles: 15
+  validate:
+    cmd: python -m qgridbench.data.validate
+    deps:
+    - path: data/raw/binary
+      hash: md5
+      md5: 8e069c7fc4e9bab88094e3ab254fc712.dir
+      size: 81663916
+      nfiles: 15
+    - path: data/raw/multiclass
+      hash: md5
+      md5: a026b5caac8cecfb0d93db3cfd48c7e3.dir
+      size: 78963019
+      nfiles: 15
+    - path: data/raw/triple
+      hash: md5
+      md5: 5d9bf811f13819d45aef0e52f00e147c.dir
+      size: 81668321
+      nfiles: 15
+    - path: src/qgridbench/data/validate.py
+      hash: md5
+      md5: 7d9e28a8c3ccb802b033045632cfe2a1
+      size: 5885
+  preprocess:
+    cmd: python -m qgridbench.data.preprocess binary triple
+    deps:
+    - path: data/raw/binary
+      hash: md5
+      md5: 8e069c7fc4e9bab88094e3ab254fc712.dir
+      size: 81663916
+      nfiles: 15
+    - path: data/raw/triple
+      hash: md5
+      md5: 5d9bf811f13819d45aef0e52f00e147c.dir
+      size: 81668321
+      nfiles: 15
+    - path: src/qgridbench/data/preprocess.py
+      hash: md5
+      md5: 18d41109f4236385e8971f35b7541746
+      size: 4841
+    - path: src/qgridbench/data/validate.py
+      hash: md5
+      md5: 7d9e28a8c3ccb802b033045632cfe2a1
+      size: 5885
+    outs:
+    - path: data/processed/binary.npz
+      hash: md5
+      md5: 40bfdff94886680e36d89f2b471e974e
+      size: 20886551
+    - path: data/processed/splits_binary.npz
+      hash: md5
+      md5: 7bf17aa98bfa60ab8ec022e79cd70291
+      size: 120752
+    - path: data/processed/splits_triple.npz
+      hash: md5
+      md5: 29880b8b36eed81d88891479e63d5be6
+      size: 120752
+    - path: data/processed/triple.npz
+      hash: md5
+      md5: cb309c3c9285c579818d224f8e4f0762
+      size: 20886657

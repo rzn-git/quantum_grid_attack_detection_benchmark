@@ -1,0 +1,7 @@
+* text=auto
+*.py text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.7z binary
+*.npz binary
+*.pdf binary

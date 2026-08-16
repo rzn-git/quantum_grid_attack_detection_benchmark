@@ -1,0 +1,30 @@
+# Classical baseline protocol.
+models: [logreg, rbf_svm, rf, xgb, lgbm, mlp]
+
+tuning:
+  n_trials: 50            # EQUAL budget per model (fairness); quantum models match this
+  tuning_seeds: [0, 1, 2]  # search objective = mean val macro-F1 over these seeds
+  objective: "val_macro_f1"
+  optuna_storage_dir: "results"  # one sqlite file per study (parallel-process safe)
+
+# RBF-SVM full-regime training cap (kernel SVM is O(n^2..3); capped stratified subset,
+# standard practice — logged in experiment_decision_log.md). Other models use full train.
+svm_train_cap: 10000
+
+evaluation:
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # winning config retrained/evaluated over all 10
+  test_touch: "once"      # test split scored once per final config, after tuning frozen
+
+feature_regimes:
+  full: {}                 # all features
+  pca: { n_components: [8, 12, 16] }  # apples-to-apples set for quantum models
+
+# Kernel/PCA-regime comparison cap (shared with quantum, so contrast stays fair).
+subset_cap: 2000
+
+data_efficiency:
+  sizes: [250, 500, 1000, 2000]  # test macro-F1 vs training-set size
+
+statistics:
+  paired_test: "wilcoxon"
+  correction: "holm-bonferroni"

@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use QuantumGridBench, please cite the accompanying paper and this software."
+title: "QuantumGridBench: Hybrid Quantum-Classical ML Benchmark for Cyberattack Detection in Smart Grids"
+version: 1.0.0
+date-released: "2026-08-16"
+authors:
+  - family-names: "Islam"
+    given-names: "Md Rezwanul"
+    orcid: "https://orcid.org/0009-0002-4100-3796"
+    email: "rznislam@gmail.com"
+repository-code: "https://github.com/rzn-git/quantum_grid_attack_detection_benchmark"
+license: MIT
+keywords:
+  - quantum machine learning
+  - smart grid security
+  - false data injection attack
+  - adversarial robustness
+  - benchmark
+preferred-citation:
+  type: generic
+  authors:
+    - family-names: "Islam"
+      given-names: "Md Rezwanul"
+      orcid: "https://orcid.org/0009-0002-4100-3796"
+  title: "Benchmarking Quantum Machine Learning for Power-System Attack Detection: Evaluation Choices Decide the Outcome Before the Models Do"
+  year: 2026

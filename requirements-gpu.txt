@@ -1,0 +1,5 @@
+# Optional GPU accelerator for VQC training (CUDA 12.8 wheels; RTX 50-series needs
+# torch >= 2.7). Install AFTER requirements.txt:
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cu128
+# The pipeline runs CPU-only without it (VQClassifier backend="auto" falls back).
+torch>=2.7

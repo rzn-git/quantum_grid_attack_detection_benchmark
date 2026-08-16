@@ -1,0 +1,44 @@
+# Environments & secrets
+.venv/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Data, run artifacts, experiment tracking (DVC-tracked or regenerable — never in git)
+/data/raw/
+/data/interim/
+/data/processed/
+/results/
+/models/
+/mlruns/
+/logs/
+/output/
+
+# DVC internals
+.dvc/cache
+.dvc/tmp
+
+# Throwaway scratch (never tracked, imported, or shipped — see CLAUDE.md tmp/ policy)
+/tmp/
+
+# Generated paper exhibits — every file here is written by `python -m experiments.make_report`
+# from results/ (RUN.md step 15; never hand-edit). Reproducible output does not belong in git.
+# To build the paper from a clone: pull results/ via DVC, then run make_report to regenerate
+# these, then pdflatex. The arXiv upload package bundles its own copies from the working tree
+# (output/arxiv_upload/<ts>/figures/), so submission never depends on these being tracked.
+/figures/
+/paper/tables/
+
+# LaTeX build debris + compiled output (rebuild with pdflatex).
+# Does NOT match paper/template/ — the vendored IEEEtran package PDFs stay tracked.
+paper/**/*.aux
+paper/**/*.log
+paper/**/*.out
+paper/**/*.synctex.gz
+paper/**/*.bbl
+paper/**/*.blg
+/paper/main.pdf
+/paper/arxiv/main.pdf

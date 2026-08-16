@@ -1,0 +1,104 @@
+# Quantum model protocol. Device: lightning.qubit unless noted.
+device: "lightning.qubit"
+
+qkernel:
+  encodings: [angle_ry, zz]   # RY angle map and IQP-style ZZ map
+  qubits: [8, 12, 16]         # == PCA dims
+  subset_cap: 2000            # O(N^2) kernel cost cap (shared with classical PCA regime)
+  tuning_val_subset: 2000     # stratified val subsample for bandwidth/C search
+                              # (full-val eval per trial is the bottleneck; decision log)
+  bandwidth:                  # tuned in Optuna (spectral fairness, CLAUDE.md section 6)
+    low: 0.05
+    high: 2.0
+    log: true
+  svm_C:
+    low: 0.01
+    high: 1000.0
+    log: true
+  multiclass: "ovr"           # sklearn one-vs-rest on precomputed kernels
+
+vqc:
+  encoding: "angle_ry"
+  depths: [2, 4, 6]           # StronglyEntanglingLayers
+  qubits: [8, 12, 16]
+  optuna:
+    n_trials: 50              # matches classical budget
+    lr: { low: 1.0e-3, high: 0.1, log: true }
+    batch_size: [32, 64, 128]
+  max_epochs: 60              # final-seed training
+  tuning_max_epochs: 30       # search trials (early stopping usually fires first)
+  patience: 10
+  multiclass: "measurement_heads"  # PauliZ on first n_classes qubits
+
+ablations:
+  shots: ["analytic", 1024, 4096]  # shot-noise study (required)
+  feature_map: [angle_ry, zz]
+  # Depolarizing-noise point: the simulator -> hardware bridge (CLAUDE.md 6.5).
+  # Shot noise models finite sampling of an IDEAL device; this models the device
+  # being WRONG, which is the qualitatively different failure. Opt-in via
+  # `--only noise_model`: a density matrix is 4**d complex entries per sample
+  # against 2**d for a statevector (256x the memory at 8 qubits), so it runs on a
+  # reduced subset. p=0.0 goes through the SAME mixed-state path, so the contrast
+  # isolates noise rather than confounding it with a change of method.
+  noise_model:
+    encoding: zz                    # best binary encoding at q8
+    depolarizing_p: [0.0, 0.01, 0.05]
+    subset_cap: 400
+    test_cap: 1500
+  # Off-diagonal Gram geometry: exponential-concentration test (Thanasilp et al.)
+  # + near-identity degeneracy stats. Cached tuned Grams give the as-benchmarked
+  # numbers; the fixed-bandwidth scan gives the clean qubit trend (tuned bandwidths
+  # differ per cell, so cached Grams alone cannot).
+  kernel_geometry:
+    scan_qubits: [4, 8, 12, 16]
+    scan_bandwidth: 1.0
+    scan_subset: 400
+    shots: [1024, 4096]             # shot-noise-vs-signal-spread ratios
+  # Huang et al. relabeling positive control: labels built from the g eigenvector
+  # of each cached Gram; classical models are RE-TUNED on the relabeled task
+  # (quantum keeps its accuracy-tuned bandwidth — asymmetry understates the win).
+  relabel_control:
+    test_size: 600
+    split_seeds: [0, 1, 2, 3, 4]    # train/test resample seeds -> mean +/- std per cell
+    svm_C_grid: [0.1, 1.0, 10.0, 100.0, 1000.0]
+    rbf_gamma_grid: { low: -3, high: 1, num: 12 }   # log10 span, matches diagnostics
+    xgb_grid:
+      n_estimators: [200, 400]
+      max_depth: [3, 6]
+      learning_rate: [0.1, 0.3]
+  # Bandwidth sweep: the dequantization <-> degeneracy axis (Shaydulin & Wild PRA
+  # 106.042407; Canatar et al. TMLR 2023; arXiv:2503.05602). Small bandwidth ->
+  # classical-like kernel; large -> near-identity Gram. The zz q12/16 tuned optima
+  # (1.94/1.92) sit AT the 2.0 tuning-box edge, so the grid deliberately extends
+  # beyond it. Scored on VAL (C re-tuned per point) — the test split stays frozen.
+  bandwidth_curve:
+    cells: [[zz, 8], [zz, 12], [zz, 16], [angle_ry, 8]]
+    bandwidths: [0.05, 0.1, 0.2, 0.4, 0.8, 1.2, 1.6, 2.0, 3.0]
+    tuning_box_high: 2.0            # mirror of qkernel.bandwidth.high, for labeling
+    val_subset: 2000
+    svm_C_grid: [0.1, 1.0, 10.0, 100.0, 1000.0]
+  # Does accuracy-tuning CAUSE the fragility? Flip rate under random L-inf noise
+  # (the Phase-4 control) as a function of bandwidth, one QSVM per point. The
+  # perturbation set is generated ONCE and reused across bandwidths (paired).
+  bandwidth_fragility:
+    cell: [zz, 8]                   # the deployed Phase-4 QSVM family
+    bandwidths: [0.1, 0.4, 0.8, 1.6, 3.0]   # near-constant end .. degenerate end
+    radii_sigma: [0.05, 0.1, 0.2, 0.3, 0.5] # units of TRAIN per-feature std
+    eval_subset: 100                # matches the Phase-4 random-perturbation control
+    n_draws: 3
+    svm_C_grid: [0.1, 1.0, 10.0, 100.0, 1000.0]
+  # Direct dequantization test: prediction agreement (raw + Cohen's kappa) between
+  # each tuned quantum-kernel SVM and a best-effort classical RBF SVM, on val.
+  dequantization:
+    val_subset: 2000
+    svm_C_grid: [0.1, 1.0, 10.0, 100.0, 1000.0]
+    rbf_gamma_grid: { low: -3, high: 1, num: 12 }
+
+diagnostics:
+  kernel_target_alignment: true
+  geometric_difference: true        # vs tuned classical RBF on same subset
+
+hardware:                           # optional confirmatory run; gated by cost_guard
+  enabled: false
+  provider: "braket"
+  device_arn: ""                    # human fills; never commit account-specific ARNs

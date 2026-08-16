@@ -1,0 +1,48 @@
+# Adversarial robustness protocol. All attacks in standardized PRE-ENCODING space.
+threat_model:
+  attacker_goal: "evasion of the detector (+ separate poisoning setting)"
+  knowledge: "white-box for differentiable (MLP, VQC); gray-box/transfer otherwise"
+  capability: "L-inf bounded perturbation of standardized features"
+
+evasion:
+  # UNIT: epsilon is a fraction of the TRAIN per-feature standard deviation, not a
+  # raw PCA coordinate. PCA outputs carry eigenvalue-sized variance (measured std
+  # 2.0-5.6 here), so a raw-coordinate epsilon of 0.3 is only ~0.09 sigma - the
+  # regime where every smooth model looks robust for free. See the SCALE CONTRACT
+  # in src/qgridbench/attacks/evasion.py. Grid reaches 0.5 sigma so the curves
+  # cover the range where models actually break (measured: ~0.3 sigma flips ~30%
+  # of MLP predictions, ~1.0 sigma flips ~84%).
+  epsilons: [0.01, 0.05, 0.1, 0.2, 0.3, 0.5]
+  fgsm: true
+  pgd:
+    n_steps: 20
+    step_frac: 0.25
+  white_box_models: [mlp, vqc]        # differentiable
+  surrogate_model: "mlp"              # transfer source for trees / kernel SVMs
+
+transfer_matrix:
+  sources: [mlp, vqc]                 # + surrogate for each family
+  # every model evaluated against every source's crafted set -> degradation matrix
+
+blackbox:
+  attack: "hopskipjump"
+  # Budget sized from measurement, not guessed (tmp/probe_hsj_budget.py):
+  # HSJ cost is dominated by the DEFENDER's per-query latency, and random forest
+  # is ~1000x slower per query than logreg (10.5 vs 0.010 s/sample at 160 q/sample)
+  # because HSJ queries in tiny batches. The original 20x1000 budget projected to
+  # ~9.3 h for RF alone. This budget is affordable for EVERY family and is applied
+  # identically to all of them - equal query budget is the comparability contract.
+  max_iter: 10
+  max_eval: 200
+  init_eval: 20
+  eval_subset: 100                    # sampled test points (query budget control)
+
+sensor_noise:                         # benign ablation (NOT adversarial); PMU realism
+  snr_db: [30, 20, 10]                # 3 SNR levels
+  # NOTE: dataset has no DER/solar telemetry -> noise is the honest proxy, not a DER claim
+
+poisoning:
+  label_flip_rates: [0.05, 0.10, 0.20]
+
+eval_subset_adv: 500                   # test points used for evasion curves (cost control)
+adv_seeds: [0, 1, 2]                   # evasion/noise seed protocol (accuracy runs keep 10)

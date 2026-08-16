@@ -1,0 +1,45 @@
+# Dataset acquisition + preprocessing contract.
+# MSU/ORNL Power System Attack Datasets (Adhikari, Pan, Morris et al.), UAH hosting.
+source:
+  base_url: "http://www.ece.uah.edu/~thm0009/icsdatasets"
+  retrieved: "2026-08-13"
+  files:
+    binary:
+      archive: "binaryAllNaturalPlusNormalVsAttacks.7z"
+      sha256: "b02c16bd74374d782298767708453570e4bc85e6a6e176c56a9c552358d472f8"
+    triple:
+      archive: "triple.7z"
+      sha256: "8bcf90a7b656cd3c73dd809a8b8b657444c5512731811875d2dbc6b44448331c"
+    multiclass:
+      archive: "multiclass.7z"
+      sha256: "ba27c1fa81c53fe2718734b9c6311a41b93cd73c86de0f86e59566a6d70e8555"
+    readme:
+      archive: "PowerSystem_Dataset_README.pdf"
+      sha256: "1b2cd6a1f43134097b960d6ddedb71762658b56389febef0b007415e7b8f4f26"
+  mirrors: []  # populated only if the primary URL rots; record retrieval date when used
+
+paths:
+  raw: "data/raw"
+  interim: "data/interim"
+  processed: "data/processed"
+
+schema:
+  n_feature_columns: 128       # PMU + relay/snort/control-panel log features
+  label_column: "marker"
+
+# Aggregation policy (logged in experiment_decision_log.md): the 15 randomly-sampled
+# CSV groups per variant are POOLED into one table before dedup + splitting.
+aggregation: "pooled"
+
+preprocess:
+  dedupe: true                  # exact duplicate feature-rows removed BEFORE splitting
+  inf_policy: "to_nan"          # +/-inf -> NaN; imputed later by train-fitted median imputer
+  split:
+    ratios: [0.6, 0.2, 0.2]     # train / val / test, stratified on label
+    seed: 1337                  # split seed is fixed and independent of model seeds
+
+# Label maps are validated against observed values at preprocess time (fail loud on unknowns).
+labels:
+  binary: { "Natural": 0, "Attack": 1 }
+  triple: { "NoEvents": 0, "Natural": 1, "Attack": 2 }
+  # multiclass: raw integer scenario markers are kept as-is (optional appendix material)

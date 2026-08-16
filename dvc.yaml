@@ -1,0 +1,34 @@
+# DVC pipeline: data acquisition + preprocessing stages. Data (data/raw, data/processed)
+# and results/ are DVC-tracked, never committed to git. The DVC remote is a human-supplied
+# S3 bucket (see configs/dvc-remote.example) — never hardcode bucket names here.
+stages:
+  download:
+    cmd: python -m qgridbench.data.download
+    deps:
+      - src/qgridbench/data/download.py
+      - configs/data.yaml
+    outs:
+      - data/raw/binary
+      - data/raw/triple
+      - data/raw/multiclass
+
+  validate:
+    cmd: python -m qgridbench.data.validate
+    deps:
+      - src/qgridbench/data/validate.py
+      - data/raw/binary
+      - data/raw/triple
+      - data/raw/multiclass
+
+  preprocess:
+    cmd: python -m qgridbench.data.preprocess binary triple
+    deps:
+      - src/qgridbench/data/preprocess.py
+      - src/qgridbench/data/validate.py
+      - data/raw/binary
+      - data/raw/triple
+    outs:
+      - data/processed/binary.npz
+      - data/processed/triple.npz
+      - data/processed/splits_binary.npz
+      - data/processed/splits_triple.npz

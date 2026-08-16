@@ -1,0 +1,7 @@
+# DVC remote placeholder — the human supplies the actual S3 bucket. Do NOT commit
+# real bucket names, account IDs, or keys. To configure:
+#
+#   dvc remote add -d storage s3://<YOUR_BUCKET>/quantum-grid-attack-detection-benchmark
+#   dvc remote modify storage region <YOUR_REGION>
+#
+# Credentials come from the ambient AWS environment / instance role (never written here).
