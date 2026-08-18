@@ -4,7 +4,7 @@ The configured budget (max_iter=20, max_eval=1000, n=200) failed to finish one
 family in 4.2h. This probe measures cost/sample at a small budget on the cheapest
 and most expensive families, so the shipped budget is chosen from data.
 
-Run:  python -m experiments.run_hsj_budget
+Run:  python -m experiments.run_hopskipjump_budget
 
 Graduated from tmp/ because its measurement set a SHIPPED value: the blackbox budget in
 configs/adversarial.yaml cites this script as the justification for max_iter/max_eval, so

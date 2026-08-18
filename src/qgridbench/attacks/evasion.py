@@ -1,6 +1,6 @@
 """Evasion attacks: FGSM and PGD (hand-rolled, L-inf, feature-space).
 
-COMPARABILITY CONTRACT (CLAUDE.md section 7): attacks operate in the
+COMPARABILITY CONTRACT (study protocol §7): attacks operate in the
 standardized PRE-ENCODING feature space shared by every model family in the
 comparison set. Epsilon-boundedness is asserted by tests/test_attacks.py.
 No clipping to a data box is applied: the space is standardized (unbounded),

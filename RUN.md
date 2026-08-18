@@ -28,7 +28,7 @@ python -m qgridbench.data.preprocess binary triple
 
 5. MVP smoke pass — entire pipeline in miniature.
 ```bash
-python -m experiments.smoke
+python -m experiments.run_smoke_test
 ```
 
 ## Definition of done (gates — each exits non-zero on failure)

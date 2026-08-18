@@ -14,7 +14,7 @@ architecture-specific and it would have to be scoped to `AngleEmbedding` +
 Uses the SAME attack path as the published number: `loss_input_grad` through the simulator,
 chain-ruled through the angle scaler, PGD at the headline budget.
 
-Run:  python -m experiments.run_reupload_fragility
+Run:  python -m experiments.run_reuploading_fragility
 
 Graduated from tmp/ because the appendix reports its numbers: white-box retention at 0.5
 sigma is 0.053 +- 0.034 for the re-uploading model against 0.053 +- 0.021 for the deployed

@@ -1,6 +1,6 @@
 """Hard cost gate for any paid quantum-hardware submission.
 
-HARD RULE (CLAUDE.md section 6): no paid-hardware job is submitted without explicit
+HARD RULE (study protocol §6): no paid-hardware job is submitted without explicit
 human approval of the dollar estimate. Approval is expressed by the operator
 setting the environment variable QGB_APPROVED_BUDGET_USD to a value >= the
 estimate. Anything else raises before any job is created.

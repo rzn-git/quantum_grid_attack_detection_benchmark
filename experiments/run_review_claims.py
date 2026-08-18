@@ -45,7 +45,7 @@ P19d  MLP SURROGATE (blocking item 2). The MLP scores 0.4565 macro-F1 at PCA-8,
 Run:  python -m experiments.run_review_claims  (from repo root)
 
 Graduated from tmp/ because the appendix reports its numbers (the ensemble result, the
-surrogate-fix baseline) and because run_constant_shift and run_operating_point_full import
+surrogate-fix baseline) and because run_constant_shift and run_operating_point_full_features import
 `floors`, `macro_f1` and `tpr_at_fpr` from here -- a shipped experiment cannot import
 dev-only scratch. The RunDir name keeps its original `probe_` prefix so already-recorded
 results still resolve.

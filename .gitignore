@@ -21,7 +21,7 @@ __pycache__/
 .dvc/cache
 .dvc/tmp
 
-# Throwaway scratch (never tracked, imported, or shipped — see CLAUDE.md tmp/ policy)
+# Throwaway scratch (never tracked, imported, or shipped — see the study protocol's tmp/ policy)
 /tmp/
 
 # Generated paper exhibits — every file here is written by `python -m experiments.make_report`

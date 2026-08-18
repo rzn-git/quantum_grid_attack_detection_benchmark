@@ -13,7 +13,7 @@ import random
 import numpy as np
 
 DEFAULT_SEEDS = list(range(10))  # final-evaluation protocol: seeds {0..9}
-TUNING_SEEDS = [0, 1, 2]  # hyperparameter search protocol (see CLAUDE.md section 5)
+TUNING_SEEDS = [0, 1, 2]  # hyperparameter search protocol (see study protocol §5)
 
 
 def set_all_seeds(seed: int) -> np.random.Generator:

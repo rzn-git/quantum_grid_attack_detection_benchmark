@@ -7,7 +7,7 @@ qkernel:
   subset_cap: 2000            # O(N^2) kernel cost cap (shared with classical PCA regime)
   tuning_val_subset: 2000     # stratified val subsample for bandwidth/C search
                               # (full-val eval per trial is the bottleneck; decision log)
-  bandwidth:                  # tuned in Optuna (spectral fairness, CLAUDE.md section 6)
+  bandwidth:                  # tuned in Optuna (spectral fairness, study protocol §6)
     low: 0.05
     high: 2.0
     log: true
@@ -33,7 +33,7 @@ vqc:
 ablations:
   shots: ["analytic", 1024, 4096]  # shot-noise study (required)
   feature_map: [angle_ry, zz]
-  # Depolarizing-noise point: the simulator -> hardware bridge (CLAUDE.md 6.5).
+  # Depolarizing-noise point: the simulator -> hardware bridge (study protocol §6.5).
   # Shot noise models finite sampling of an IDEAL device; this models the device
   # being WRONG, which is the qualitatively different failure. Opt-in via
   # `--only noise_model`: a density matrix is 4**d complex entries per sample

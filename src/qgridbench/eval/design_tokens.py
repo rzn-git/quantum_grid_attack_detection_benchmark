@@ -1,7 +1,7 @@
 """Design tokens: single source of truth for figure colors, sizes, typography.
 
 Every figure reads from here — no inline hex codes or pixel values elsewhere
-(CLAUDE.md design-token rule). Restrained palette: one primary, one accent,
+(the design-token rule). Restrained palette: one primary, one accent,
 a colorblind-safe categorical series, neutral grid.
 """
 

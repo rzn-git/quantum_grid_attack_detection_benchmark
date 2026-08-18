@@ -367,7 +367,7 @@ def main() -> None:
             summary["objective_regime_source"] = obj.name
             log.info("objective/regularization table from %s", obj.name)
 
-        # ---- three-class confusion (CLAUDE.md 8.8 appendix item) ---------------
+        # ---- three-class confusion (study protocol §8.8 appendix item) ---------------
         conf = sorted(
             d
             for d in RUNS.glob("*ablations_triple*")

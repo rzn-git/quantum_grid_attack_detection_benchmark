@@ -28,7 +28,7 @@ a loss is evidence, not proof, and is logged as such.
 Run:  python -m experiments.run_reuploading_vqc
 
 Graduated from tmp/ because the appendix reports its numbers (six configurations spanning
-0.513-0.537 validation macro-F1) and because run_reupload_fragility imports `ReuploadVQC`
+0.513-0.537 validation macro-F1) and because run_reuploading_fragility imports `ReuploadVQC`
 from here -- a shipped experiment cannot import dev-only scratch. The RunDir name keeps its
 original `probe_` prefix so already-recorded results still resolve.
 """

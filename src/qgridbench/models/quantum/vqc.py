@@ -27,7 +27,7 @@ signature and is reported as a finding.
 
 Attack interface: `loss_input_grad` differentiates the loss w.r.t. the INPUT
 angles, i.e. through the encoding, keeping attacks in the shared pre-encoding
-feature space (comparability contract, CLAUDE.md section 7).
+feature space (comparability contract, study protocol §7).
 """
 
 from __future__ import annotations

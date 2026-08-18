@@ -15,7 +15,7 @@ is an artefact of the near-chance regime and must be scoped to it (or dropped).
 RBF-SVM is excluded: sklearn's single-threaded SVC on 47k x 128 was the cause of a 3.2 h overrun
 in an earlier round (decision log 2026-08-15T07:45Z) and it is not needed for the claim.
 
-Run:  python -m experiments.run_operating_point_full
+Run:  python -m experiments.run_operating_point_full_features
 
 Graduated from tmp/ because the appendix reports its numbers: full-feature detection at a
 1% false-alarm budget (LightGBM 0.652, random forest 0.663) and the false-alarm flood under

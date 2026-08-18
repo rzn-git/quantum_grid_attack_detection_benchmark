@@ -6,7 +6,7 @@ over its support vectors j, where a(.) is the train-fitted AngleScaler (linear
 map + clip to [-pi, pi]) and bw the tuned encoding bandwidth. This module
 rebuilds that exact function as one differentiable torch graph and returns
 d(loss)/dx in the shared PRE-ENCODING (PCA) feature space, keeping the
-comparability contract (CLAUDE.md section 7).
+comparability contract (study protocol §7).
 
 Engine: the SAME supported path the VQC uses — PennyLane's torch interface on
 `default.qubit` with `diff_method="backprop"`, batched via parameter

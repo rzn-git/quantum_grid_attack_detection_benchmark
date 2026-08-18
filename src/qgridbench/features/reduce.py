@@ -3,13 +3,13 @@
 LEAKAGE RULE (non-negotiable, enforced by tests/test_leakage.py): every fitted
 transform is fit on the TRAIN split only and applied frozen to val/test.
 
-Two regimes (CLAUDE.md section 5):
+Two regimes (study protocol §5):
   - "full": median-impute + standardize all 128 features
   - "pca":  median-impute + standardize + PCA to n_components in {8, 12, 16}
             (the apples-to-apples comparison set for quantum models)
 
 For quantum encodings, PCA outputs are additionally rescaled to [-pi, pi] by a
-MinMaxScaler fit on train only (CLAUDE.md section 6 encoding-scaling rule).
+MinMaxScaler fit on train only (study protocol §6 encoding-scaling rule).
 """
 
 from __future__ import annotations

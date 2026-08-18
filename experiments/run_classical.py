@@ -1,6 +1,6 @@
 """Phase 2: classical baselines — Optuna tuning (seeds {0,1,2}) then 10-seed eval.
 
-Protocol (CLAUDE.md section 5):
+Protocol (§5):
   - equal budget: 50 Optuna trials per model, objective = mean val macro-F1 over
     tuning seeds
   - winning config retrained + evaluated over all 10 seeds

@@ -2,7 +2,7 @@
 
 Run identically against EVERY model family (closes the objection that
 surrogate-transfer under-attacks tree/kernel models). Query budget per sample
-is capped and reported (CLAUDE.md section 7).
+is capped and reported (study protocol §7).
 
 NOT REPRODUCIBLE FROM ITS SEED — read this before quoting any number it returns.
 ART builds HopSkipJump's initial adversarial point from `np.random.RandomState()` with no

@@ -74,7 +74,7 @@ def shot_study(reg, encoding, n_qubits, cap, shots_list, seeds):
 
 
 def noise_model_study(reg, encoding, n_qubits, cap, p_levels, test_cap=2000):
-    """Depolarizing-noise point: the simulator -> hardware bridge (CLAUDE.md 6.5).
+    """Depolarizing-noise point: the simulator -> hardware bridge (study protocol §6.5).
 
     Shot noise (above) models finite sampling of an ideal device; this models the
     device being *wrong*, which is the qualitatively different failure. Runs on a
@@ -860,7 +860,7 @@ def data_efficiency(variant, n_qubits, sizes, seeds, cap):
 
 
 def confusion_three_class(variant, regime, n_components, tuned_run, seeds, cap):
-    """Per-class metrics + confusion matrices for the three-class task (CLAUDE.md section 8.8).
+    """Per-class metrics + confusion matrices for the three-class task (study protocol §8.8).
 
     The operationally load-bearing cell is natural-vs-attack: a grid operator's first question
     of any detector is how often it calls a legitimate disturbance an attack, and macro-F1
@@ -1511,7 +1511,7 @@ def bandwidth_fragility_bounded(variant, cfg_frag, gate_slice=64, gate_tol=1e-10
 
     rows, gate = [], []
     for bw in cfg_frag["bandwidths"]:
-        # NUMERICAL GATE (CLAUDE.md 2): the closed form must reproduce the shipped
+        # NUMERICAL GATE (study protocol §2): the closed form must reproduce the shipped
         # simulator, else this arm is a lookalike rather than the unentangled kernel.
         # Run at float64/complex128 on BOTH sides so the gate measures the identity and
         # not the pipeline's storage precision: angles are stored float32, which alone

@@ -48,7 +48,7 @@ Every number in the paper traces to a versioned run directory produced by this c
 uv venv --python 3.11 && uv pip install -r requirements.txt -e .
 python -m qgridbench.data.download          # fetch + verify (SHA-256) + extract the dataset
 python -m qgridbench.data.preprocess binary triple
-python -m experiments.smoke                 # end-to-end miniature sanity run
+python -m experiments.run_smoke_test        # end-to-end miniature sanity run
 ```
 
 The smoke pass exercises every stage in miniature (tiny subset, 2 seeds, 4 qubits, one ε)
@@ -60,9 +60,11 @@ python -m experiments.make_report           # writes every table and figure from
 ```
 
 `make_report` reads exclusively from `results/runs/`, so no reported number can exist
-without an artifact behind it. Expect the full sweep to take roughly a day on a 24-core
-workstation — the quantum-kernel and black-box stages dominate, and both checkpoint so
-they can be resumed.
+without an artifact behind it. It also refreshes [MODEL_CARD.md](MODEL_CARD.md), which
+records the current measured state of every benchmarked system — headline metrics per
+slice, known failure modes, and the provenance behind each figure. Expect the full sweep
+to take roughly a day on a 24-core workstation — the quantum-kernel and black-box stages
+dominate, and both checkpoint so they can be resumed.
 
 ## License & data terms
 

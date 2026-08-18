@@ -97,7 +97,7 @@ QUANTUM_PREFIXES = ("qsvm", "vqc")
 def cost_table(run_dir: Path, out_name: str) -> Path:
     """Training wall-clock and per-sample inference latency for EVERY model.
 
-    Required by CLAUDE.md section 5: grid detection has real-time constraints, so a
+    Required by study protocol §5: grid detection has real-time constraints, so a
     reviewer will ask what the quantum models cost to run. Quantum latencies are
     SIMULATOR latencies and are marked as such — they are a lower bound on a real
     device only in the sense that a device would add queue and shot overhead, and
@@ -705,7 +705,7 @@ def objective_regime_table(run_dir: Path, out_name: str) -> Path:
 
 
 def three_class_confusion_table(run_dir: Path, out_name: str) -> Path:
-    """Appendix exhibit (CLAUDE.md 8.8): where the three-class task is actually hard.
+    """Appendix exhibit (study protocol §8.8): where the three-class task is actually hard.
 
     Two panels, one per feature regime, from the two confusion artifacts. The two headline
     columns are the off-diagonal cells an operator cares about and a macro-F1 cannot show:

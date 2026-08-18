@@ -65,7 +65,7 @@ QUANTUM_FAMILIES = ("qsvm", "vqc")
 def robustness_stats(adv_dir: Path) -> dict:
     """Test RQ2 as the PRE-REGISTERED directional hypothesis, not a post-hoc pick.
 
-    CLAUDE.md section 8.3 frames RQ2 as: prior evidence for a quantum robustness
+    study protocol §8.3 frames RQ2 as: prior evidence for a quantum robustness
     advantage exists only on image data — does it hold on tabular grid data? The
     honest instantiation is therefore EVERY quantum family against EVERY classical
     family, Holm-corrected over that whole set. Testing the quantum kernel against

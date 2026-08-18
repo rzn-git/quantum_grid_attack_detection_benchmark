@@ -1,11 +1,11 @@
-"""MVP smoke pass (CLAUDE.md section 11): the ENTIRE pipeline end-to-end in
+"""MVP smoke pass (study protocol §11): the ENTIRE pipeline end-to-end in
 miniature — tiny data subset, 2 seeds, few Optuna trials, 4 qubits, one epsilon —
 so integration breaks surface in minutes, not after a week of kernel compute.
 
 This is NOT an experiment; it produces no reportable numbers. It asserts that
 every stage runs and writes its artifact. Fail loud on any break.
 
-Run:  python -m experiments.smoke
+Run:  python -m experiments.run_smoke_test
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Run-directory + MLflow tracking helpers.
 
-Every experiment produces BOTH (per CLAUDE.md section 9):
+Every experiment produces BOTH (per study protocol §9):
   1. a plain-JSON run dir under results/runs/<UTC-timestamp>_<name>/ containing
      the resolved config, git SHA (+dirty flag), seed list, wall time, and the
      package lock hash — the artifact-traceable record every reported number

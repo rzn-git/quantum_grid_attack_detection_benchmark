@@ -306,7 +306,7 @@ def run_vqc(reg, n_qubits, seeds, cfg_q, storage, tag, run: RunDir):
         "best_params": best,
         "aggregate": agg,
         # persisted so headline comparisons are paired-testable from artifacts
-        # (CLAUDE.md section 5: paired Wilcoxon across seeds); aggregate alone
+        # (study protocol §5: paired Wilcoxon across seeds); aggregate alone
         # only supports a margin, not a significance claim
         "per_seed": per_seed,
         "grad_norm_var_final_mean": float(np.mean(grad_var_last)),

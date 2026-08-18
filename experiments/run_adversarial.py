@@ -4,7 +4,7 @@ All attacks in the standardized PRE-ENCODING (PCA) feature space (comparability
 contract). Differentiable models (MLP, VQC) are attacked white-box; trees/kernel
 SVMs are attacked by transfer from the MLP surrogate and by black-box HopSkipJump.
 
-Deliverables (CLAUDE.md section 7):
+Deliverables (study protocol §7):
   - evasion degradation curves (macro-F1 vs epsilon) per model family
   - source x target transferability matrix
   - black-box (HopSkipJump) robustness, identical per family, capped query budget

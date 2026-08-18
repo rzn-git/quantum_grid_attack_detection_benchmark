@@ -1,6 +1,6 @@
 """All paper figures are generated ONLY here, from results/runs JSON.
 
-Design tokens (single source of truth) live in eval.viz_tokens. Figures write
+Design tokens (single source of truth) live in eval.design_tokens. Figures write
 to figures/ as PDF (vector, paper-ready).
 """
 
@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from qgridbench.eval.viz_tokens import COLORS, FIGSIZE, apply_style
+from qgridbench.eval.design_tokens import COLORS, FIGSIZE, apply_style
 from qgridbench.utils.run_tracking import REPO_ROOT
 
 FIG_DIR = REPO_ROOT / "figures"
