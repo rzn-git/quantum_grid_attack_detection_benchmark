@@ -26,7 +26,7 @@ transfer_matrix:
 
 blackbox:
   attack: "hopskipjump"
-  # Budget sized from measurement, not guessed (tmp/probe_hsj_budget.py):
+  # Budget sized from measurement, not guessed (experiments/run_hsj_budget.py):
   # HSJ cost is dominated by the DEFENDER's per-query latency, and random forest
   # is ~1000x slower per query than logreg (10.5 vs 0.010 s/sample at 160 q/sample)
   # because HSJ queries in tiny batches. The original 20x1000 budget projected to
