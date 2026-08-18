@@ -24,3 +24,10 @@ preferred-citation:
       orcid: "https://orcid.org/0009-0002-4100-3796"
   title: "Benchmarking Quantum Machine Learning for Power-System Attack Detection: Evaluation Choices Decide the Outcome Before the Models Do"
   year: 2026
+  month: 8
+  doi: "10.48550/arXiv.2608.15617"
+  url: "https://arxiv.org/abs/2608.15617"
+  identifiers:
+    - type: other
+      value: "arXiv:2608.15617"
+      description: "arXiv identifier of the preprint (primary category cs.LG)"
