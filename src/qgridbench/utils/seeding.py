@@ -17,9 +17,18 @@ TUNING_SEEDS = [0, 1, 2]  # hyperparameter search protocol (see study protocol �
 
 
 def set_all_seeds(seed: int) -> np.random.Generator:
-    """Seed python, numpy legacy, and hashing; return a dedicated Generator."""
+    """Seed python, numpy legacy, torch, and hashing; return a dedicated Generator.
+
+    torch is imported inside the call, not at module scope: this module is imported by every
+    entrypoint while torch costs ~1.5 s to load, and the cost belongs to callers that actually
+    seed. The import is unconditional — no try/except — so a missing torch fails loud rather
+    than silently leaving an RNG unseeded, which is the defect this function exists to prevent.
+    """
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)  # covers CUDA devices too (torch delegates to cuda.manual_seed_all)
     os.environ["PYTHONHASHSEED"] = str(seed)
     return np.random.default_rng(seed)
 

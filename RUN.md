@@ -33,7 +33,8 @@ python -m experiments.run_smoke_test
 
 ## Definition of done (gates — each exits non-zero on failure)
 
-6. Tests, lint, format.
+6. Tests, lint, format. Run from the activated `.venv` (or prefix each with `uv run`):
+   a system interpreter of a different minor version fails at collection.
 ```bash
 python -m pytest -q
 ```
@@ -114,6 +115,30 @@ python -m experiments.run_group_split_control
 ```
 ```bash
 python -m experiments.run_group_whitebox_control
+```
+
+14d. The split-mechanism chain behind the paper's leak-rate law and per-family slopes, and
+    the capacity control. Each is standalone, takes `--smoke` for a tiny end-to-end pass,
+    and none feeds `make_report`. `run_capacity_matched_control` walks a fixed LightGBM
+    capacity ladder to show the whole-file ceiling is not an architecture effect;
+    `run_file_row_order` measures lag-distance ratios and label-run structure to establish
+    that row order within a released file is temporal; `run_temporal_split` builds the
+    within-(file, scenario)-block ordered, embargoed, shuffled, middle-band and reversed
+    splits and reads the leak-rate law from them; `run_leak_rate_families` re-runs those six
+    splits across five classical families (it imports the split constructions from
+    `run_temporal_split`, so run that one first and keep its artifact for the positive
+    control). All four need steps 2–4 and the tuned studies from step 7.
+```bash
+python -m experiments.run_capacity_matched_control
+```
+```bash
+python -m experiments.run_file_row_order
+```
+```bash
+python -m experiments.run_temporal_split
+```
+```bash
+python -m experiments.run_leak_rate_families
 ```
 
 ## Reporting artifacts

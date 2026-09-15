@@ -56,3 +56,28 @@ def test_vqc_reproducible_and_trains(toy_binary, toy_splits):
     # gradient-norm history recorded (trainability logging)
     assert len(m1.history["grad_norm_var"]) >= 1
     assert all(np.isfinite(m1.history["grad_norm_mean"]))
+
+
+def test_set_all_seeds_covers_torch():
+    """The name promises ALL seeds; torch was silently missing until 2026-08-23.
+
+    Found by the N2b spike: every non-torch arm was bit-identical across runs while the
+    torch autoencoder arm moved by up to 0.034, because `set_all_seeds` seeded python,
+    numpy and PYTHONHASHSEED but not torch. This pins the three streams the function
+    claims, so a future library added to it cannot regress the same way silently.
+    """
+    import random
+
+    import torch
+
+    def draw(seed: int):
+        set_all_seeds(seed)
+        return (
+            torch.randn(4).tolist(),
+            np.random.rand(4).tolist(),
+            [random.random() for _ in range(4)],
+        )
+
+    a, b = draw(0), draw(0)
+    assert a == b, "set_all_seeds is not reproducible across calls at the same seed"
+    assert draw(0)[0] != draw(1)[0], "torch stream does not respond to the seed at all"

@@ -7,7 +7,9 @@ paper/main.tex) plus a .csv sidecar. Significance marks come from paired Wilcoxo
 
 from __future__ import annotations
 
+import csv
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -85,9 +87,7 @@ def accuracy_table(run_dir: Path, out_name: str, best_family: str | None = None)
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     return tex
 
 
@@ -147,9 +147,7 @@ def cost_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     return tex
 
 
@@ -195,9 +193,7 @@ def blackbox_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     return tex
 
 
@@ -241,9 +237,7 @@ def diagnostics_combined_table(run_dirs: dict[int, Path], out_name: str) -> Path
     lines += ["\\bottomrule", "\\end{tabular}"]
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     return tex
 
 
@@ -253,6 +247,7 @@ def robustness_summary_table(
     blackbox_run_dir: Path,
     out_name: str,
     whitebox_run_dir: Path | None = None,
+    hsj_restart_run_dirs: list[Path] | None = None,
 ) -> Path:
     """Retention under the shared protocol, the targeted white-box column, the
     random-perturbation control, and HSJ distortion in ONE table.
@@ -277,6 +272,12 @@ def robustness_summary_table(
         "random_control"
     ]
     bb = json.loads((blackbox_run_dir / "results.json").read_text())["per_seed"][0]["blackbox"]
+    # HSJ over restarts (v2 correction batch): ART's initial point is unseeded, so a single
+    # draw is not a measurement — when restart artifacts are supplied, the HSJ column
+    # becomes mean ± std over restarts and a family missing from them FAILS the build.
+    hsj_restarts: dict[str, dict] = {}
+    for d in hsj_restart_run_dirs or []:
+        hsj_restarts.update(json.loads((d / "results.json").read_text())["summary"])
     wb_ret: dict[str, float] = {}
     if whitebox_run_dir is not None:
         p5a = json.loads((whitebox_run_dir / "results.json").read_text())["p5a_whitebox_qsvm"]
@@ -337,14 +338,25 @@ def robustness_summary_table(
             "whitebox_retention",
             "random_flip_rate",
             "hsj_median_linf_sigma",
+            "hsj_restart_std",
         ]
     ]
     for fam, v in sorted(st["per_family"].items(), key=lambda kv: -kv[1]["retention"]):
         flip = ctrl.get(fam, {}).get("by_radius", {}).get(str(eps), {}).get("flip_rate")
         hsj = bb.get(fam, {}).get("median_linf_distortion")
+        hsj_std = None
+        if hsj_restarts:
+            if fam not in hsj_restarts:
+                raise ValueError(f"HSJ restart summary missing family '{fam}'")
+            hsj, hsj_std = hsj_restarts[fam]["mean"], hsj_restarts[fam]["std"]
         wbr = wb_ret.get(fam)
         flip_tex = f"{flip * 100:.0f}\\%" if flip is not None else "---"
-        hsj_tex = f"{hsj:.3f}" if hsj is not None else "---"
+        if hsj is None:
+            hsj_tex = "---"
+        elif hsj_std is not None:
+            hsj_tex = _fmt(hsj, hsj_std)
+        else:
+            hsj_tex = f"{hsj:.3f}"
         wb_tex = f"{wbr:.3f}" if wbr is not None else "---"
         dfloor = v["adv_mean"] - floor
         lines.append(
@@ -361,14 +373,13 @@ def robustness_summary_table(
                 f"{wbr:.4f}" if wbr is not None else "",
                 f"{flip:.4f}" if flip is not None else "",
                 f"{hsj:.4f}" if hsj is not None else "",
+                f"{hsj_std:.4f}" if hsj_std is not None else "",
             ]
         )
     lines += ["\\bottomrule", "\\end{tabular}"]
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     return tex
 
 
@@ -434,10 +445,16 @@ def kernel_exhaustion_table(whitebox_run_dir: Path, out_name: str) -> Path:
     lines += ["\\bottomrule", "\\end{tabular}"]
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     return tex
+
+
+def _write_csv(path: Path, rows) -> None:
+    """RFC-4180 quoting: configuration labels carry commas ("QSVM ZZ, 8 qubits"), and a bare
+    join silently shifts columns for any standard parser (BACKLOG v2 row, found by N1's
+    positive control 2026-08-23T00:40Z)."""
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        csv.writer(fh).writerows(rows)
 
 
 def _regime(mass: float, f1_minus_floor: float) -> str:
@@ -520,9 +537,7 @@ def regime_table(
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in csv_rows), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", csv_rows)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(
         json.dumps(
             {"radius_sigma": float(rows[0][4]), "constant_predictor_floor": floor}, indent=1
@@ -587,9 +602,7 @@ def quantum_bandwidth_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in csv_rows), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", csv_rows)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(
         json.dumps(
             {
@@ -681,9 +694,7 @@ def objective_regime_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in csv_rows), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", csv_rows)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(
         json.dumps(
             {
@@ -777,9 +788,7 @@ def three_class_confusion_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in csv_rows), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", csv_rows)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return tex
 
@@ -937,9 +946,7 @@ def surrogate_control_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(
         json.dumps(
             {
@@ -1031,9 +1038,7 @@ def ray_crossings_table(quantum_run_dir: Path, classical_run_dir: Path, out_name
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(
         json.dumps(
             {
@@ -1049,38 +1054,63 @@ def ray_crossings_table(quantum_run_dir: Path, classical_run_dir: Path, out_name
     return tex
 
 
-def group_split_table(run_dir: Path, out_name: str) -> Path:
-    """P12a exhibit: the same tuned models under two split protocols.
+def group_split_table(run_dir: Path, out_name: str, ladder_dir: Path | None = None) -> Path:
+    """P12a exhibit: the same tuned models under the split protocols on this data.
 
-    Left column is the field's convention on this dataset (stratified split over pooled
-    rows); right column holds whole source files out (mean +/- std over partitions).
-    Every model here is tuned; the quantum arm runs at its published bandwidth/C, closing
-    the probe's untuned-arm caveat (decision log 2026-08-16T02:35Z, condition 2). The
-    nearest-neighbour row is the mechanism: the fraction of test rows with a train
-    neighbour closer than 0.1 in standardized full-feature space.
+    First column is this study's headline protocol (stratified split over pooled rows);
+    last column holds whole source files out (mean +/- std over partitions). When a P25
+    split-protocol-ladder run is supplied, a middle column adds the rule the benchmark
+    was introduced with (Hink et al. 2014: rows split inside each source file), so the
+    exhibit shows every rung measured. Every model here is tuned; the quantum arm runs
+    at its published bandwidth/C, closing the probe's untuned-arm caveat (decision log
+    2026-08-16T02:35Z, condition 2). The nearest-neighbour row is the mechanism: the
+    fraction of test rows with a train neighbour closer than 0.1 in standardized
+    full-feature space.
     """
     data = json.loads((run_dir / "results.json").read_text())
     grp = [r for r in data["rows"] if r["split"] == "group"]
     row = next(r for r in data["rows"] if r["split"] == "row (shipped)")
+    wf = []
+    if ladder_dir is not None:
+        ladder = json.loads((ladder_dir / "results.json").read_text())
+        wf = [r for r in ladder["rows"] if r["rule"] == "within-file (Hink)"]
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
 
-    def g(key):
-        vals = [r[key] for r in grp]
+    def agg(rows_, key):
+        vals = [r[key] for r in rows_]
         return float(np.mean(vals)), float(np.std(vals))
 
-    def line(label, key, signed=False, pct=False):
-        rv, (m, s) = row[key], g(key)
+    def fmt_ms(m, s, signed=False, pct=False):
+        # A spread too tight for three decimals is shown at two significant figures
+        # (0.00015, never a misleading 0.000), matching how the prose quotes it.
         if pct:
-            return f"{label} & {100 * rv:.1f}\\% & {100 * m:.1f}\\,$\\pm$\\,{100 * s:.1f}\\% \\\\"
+            return f"{100 * m:.1f}\\,$\\pm$\\,{100 * s:.1f}\\%"
+        dec = 3
+        if s > 0 and round(s, 3) == 0:
+            dec = math.ceil(-math.log10(s)) + 1
         if signed:
-            return f"{label} & ${rv:+.3f}$ & ${m:+.3f}\\,\\pm\\,{s:.3f}$ \\\\"
-        return f"{label} & {rv:.3f} & {_fmt(m, s)} \\\\"
+            return f"${m:+.3f}\\,\\pm\\,{s:.{dec}f}$"
+        return f"{m:.3f}\\,$\\pm$\\,{s:.{dec}f}"
 
+    def line(label, key, signed=False, pct=False):
+        rv = row[key]
+        first = f"{100 * rv:.1f}\\%" if pct else (f"${rv:+.3f}$" if signed else f"{rv:.3f}")
+        cells = [first]
+        if wf:
+            cells.append(fmt_ms(*agg(wf, key), signed=signed, pct=pct))
+        cells.append(fmt_ms(*agg(grp, key), signed=signed, pct=pct))
+        return f"{label} & " + " & ".join(cells) + " \\\\"
+
+    ncols = 3 if wf else 2
+    header = " & Row-level split"
+    if wf:
+        header += " & Within-file split"
+    header += " & Whole files held out \\\\"
     lines = [
         "% auto-generated by qgridbench.eval.tables -- do not edit by hand",
-        r"\begin{tabular}{lrr}",
+        rf"\begin{{tabular}}{{l{'r' * ncols}}}",
         r"\toprule",
-        " & Row-level split & Whole files held out \\\\",
+        header,
         r"\midrule",
         line("Full 128 feat., tuned LightGBM", "level_full_lgbm"),
         line("PCA-8 (2k cap), tuned XGBoost", "matched_classical"),
@@ -1101,20 +1131,27 @@ def group_split_table(run_dir: Path, out_name: str) -> Path:
         "floor_macro_f1",
         "nn_frac_within_0.1",
     ]
-    rows_csv = [["quantity", "row_level", "group_mean", "group_std"]]
+    head = ["quantity", "row_level"]
+    if wf:
+        head += ["within_file_mean", "within_file_std"]
+    head += ["group_mean", "group_std"]
+    rows_csv = [head]
     for k in keys:
-        m, s = g(k)
-        rows_csv.append([k, f"{row[k]:.4f}", f"{m:.4f}", f"{s:.4f}"])
+        cells = [k, f"{row[k]:.4f}"]
+        if wf:
+            wm, ws = agg(wf, k)
+            cells += [f"{wm:.4f}", f"{ws:.5f}"]
+        gm, gs = agg(grp, k)
+        cells += [f"{gm:.4f}", f"{gs:.4f}"]
+        rows_csv.append(cells)
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
-    (TABLE_DIR / f"{out_name}_meta.json").write_text(
-        json.dumps({"run": run_dir.name, "verdict": data["verdict"]}, indent=2),
-        encoding="utf-8",
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
+    meta = {"run": run_dir.name, "verdict": data["verdict"]}
+    if ladder_dir is not None:
+        meta["ladder_run"] = ladder_dir.name
+    (TABLE_DIR / f"{out_name}_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return tex
 
 
@@ -1169,9 +1206,7 @@ def group_split_partitions_table(run_dir: Path, out_name: str) -> Path:
 
     tex = TABLE_DIR / f"{out_name}.tex"
     tex.write_text("\n".join(lines), encoding="utf-8")
-    (TABLE_DIR / f"{out_name}.csv").write_text(
-        "\n".join(",".join(map(str, r)) for r in rows_csv), encoding="utf-8"
-    )
+    _write_csv(TABLE_DIR / f"{out_name}.csv", rows_csv)
     (TABLE_DIR / f"{out_name}_meta.json").write_text(
         json.dumps({"run": run_dir.name}, indent=2), encoding="utf-8"
     )

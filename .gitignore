@@ -42,3 +42,8 @@ paper/**/*.bbl
 paper/**/*.blg
 /paper/main.pdf
 /paper/arxiv/main.pdf
+
+# Publisher PDFs of cited sources — read locally, never redistributed (IEEE/Wiley/Springer
+# Nature copyright), and 13 MB of binaries. The README and paper/lit_review_needs.md carry
+# what was read and what each one says; the PDFs themselves stay out of git.
+/paper/literature/*.pdf

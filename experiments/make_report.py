@@ -290,11 +290,22 @@ def main() -> None:
         # ---- paper robustness exhibit: PGD + random control + HSJ in one table --
         rnd = latest("*adversarial_binary_q8_random")
         wbx = latest("*whitebox_qsvm_binary_q8", key="p5a_whitebox_qsvm")
+        # HSJ restart artifacts (v2): together they cover all eight families at five
+        # restarts, so the HSJ column reports mean ± std instead of one unseeded draw.
+        hsj_probes = sorted(RUNS.glob("*probe_hsj_restarts_binary_q8"))
         if adv and rnd and bb:
-            robustness_summary_table(adv, rnd, bb, "robustness_binary_q8", whitebox_run_dir=wbx)
+            robustness_summary_table(
+                adv,
+                rnd,
+                bb,
+                "robustness_binary_q8",
+                whitebox_run_dir=wbx,
+                hsj_restart_run_dirs=hsj_probes or None,
+            )
             log.info(
-                "robustness summary table (PGD + white-box%s + random + HSJ)",
+                "robustness summary table (PGD + white-box%s + random + HSJ%s)",
                 f" from {wbx.name}" if wbx else " unavailable",
+                f" over restarts from {len(hsj_probes)} probes" if hsj_probes else " single-draw",
             )
 
         # ---- P17e: interleaving measured directly, with its matched classical control --
@@ -313,9 +324,14 @@ def main() -> None:
         # ---- P12a split-protocol control: paired row-level vs whole-file exhibit --
         gsc = latest("*group_split_control_binary")
         if gsc:
-            group_split_table(gsc, "group_split_binary")
+            ladder = latest("*split_protocol_ladder_binary")  # P25; column added when present
+            group_split_table(gsc, "group_split_binary", ladder_dir=ladder)
             group_split_partitions_table(gsc, "group_split_partitions")
-            log.info("group-split control tables from %s", gsc.name)
+            log.info(
+                "group-split control tables from %s (ladder: %s)",
+                gsc.name,
+                ladder.name if ladder else "none",
+            )
 
         # ---- P7b mechanism exhibit: exhaustible vs non-exhaustible kernel ------
         # ZZ/q8 is the paper's reference configuration; pin it explicitly, because the

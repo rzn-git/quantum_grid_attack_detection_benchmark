@@ -33,6 +33,27 @@ def test_src_does_not_import_experiments_or_tests():
         assert not any(m.split(".")[0] == "tests" for m in mods), f"{py} imports tests"
 
 
+# Shipped code is exported to a separate release repository that carries neither the
+# study-protocol file nor reports/. A pointer to either by filename dangles there and names
+# the tooling; the convention is "study protocol §N" and "pass-4 workplan item E12"
+# (2026-09-15: twenty-three runner docstrings shipped such pointers before this guard).
+_SHIPPED_ROOTS = ("src", "experiments", "tests", "configs", "tools/leakage_audit")
+_PRIVATE_FILENAME = re.compile("|".join([r"CLAUDE" + r"\.md", r"reports/\w+\.md"]))
+
+
+def test_shipped_code_never_names_private_files():
+    repo = Path(__file__).resolve().parents[1]
+    offenders = []
+    for root in _SHIPPED_ROOTS:
+        for f in (repo / root).rglob("*"):
+            if f.suffix not in {".py", ".yaml", ".toml", ".md"} or f == Path(__file__).resolve():
+                continue
+            for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                if _PRIVATE_FILENAME.search(line):
+                    offenders.append(f"{f.relative_to(repo)}:{n}: {line.strip()[:80]}")
+    assert not offenders, "shipped code names private files:\n" + "\n".join(offenders)
+
+
 # --- specification guards -------------------------------------------------------------
 # These exist because two defects reached the paper by being true of the SPECIFICATION
 # rather than of any result: an imbalance policy that silently skipped one estimator

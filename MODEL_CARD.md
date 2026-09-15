@@ -28,9 +28,15 @@ detection on the public MSU/ORNL dataset, on accuracy **and** adversarial robust
 protocol is itself the study's largest measured evaluator effect** (P12a + the shipped
 control, decision log 2026-08-15T22:06Z / 2026-08-16T02:44Z, artifact
 `results/runs/20260816T023620Z_group_split_control_binary/`). Rows within a source file
-are near-duplicates (45.8% of test rows have a train neighbour within 0.1 under this
-protocol; 5.0 ± 0.4% with whole files held out), and holding whole files out drops tuned
-LightGBM from 0.905 to 0.594 ± 0.008 macro-F1. At matched dimensionality under the 2,000
+are ordered samples of one session and therefore near-duplicates of their temporal
+neighbours (45.8% of test rows have a train neighbour within 0.1 under this protocol, and
+for 99% of them that neighbour is the adjacent row in file order; 5.0 ± 0.4% with whole
+files held out — decision log 2026-09-01T23:09Z, artifact
+`results/runs/20260901T230730Z_file_row_order_binary/`). Holding whole files out drops
+tuned LightGBM from 0.905 to 0.594 ± 0.008 macro-F1, and a temporal split that keeps every
+file and scenario on both sides lands at the same place (0.6005), the score tracking the
+residual near-duplicate rate at r = 0.99 across seven split constructions (2026-09-02T02:33Z,
+`results/runs/20260902T022541Z_temporal_split_binary/`). At matched dimensionality under the 2,000
 cap, tuned XGBoost falls to 0.523 ± 0.013 and the tuned ZZ QSVM to 0.508 ± 0.012 against
 a 0.499 floor, with their contrast at +0.015 ± 0.015 and sign-unstable across partitions.
 Within-protocol comparisons in the tables below stand; absolute levels are

@@ -22,3 +22,8 @@ pyyaml>=6.0
 joblib>=1.4
 ruff>=0.6
 black>=24.8
+
+# v2 modernization arms (decision log 2026-09-01T11:05Z): open tabular foundation + deep models
+tabicl>=2.1
+tabm>=0.0.3
+rtdl-revisiting-models>=0.0.2
