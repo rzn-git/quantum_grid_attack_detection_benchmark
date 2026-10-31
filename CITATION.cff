@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use QuantumGridBench, please cite the accompanying paper and this software."
 title: "QuantumGridBench: Hybrid Quantum-Classical ML Benchmark for Cyberattack Detection in Smart Grids"
 version: 2.0.0
-date-released: "2026-09-15"
+date-released: "2026-10-31"
 authors:
   - family-names: "Islam"
     given-names: "Md Rezwanul"

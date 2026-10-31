@@ -34,9 +34,11 @@ for 99% of them that neighbour is the adjacent row in file order; 5.0 ± 0.4% wi
 files held out — decision log 2026-09-01T23:09Z, artifact
 `results/runs/20260901T230730Z_file_row_order_binary/`). Holding whole files out drops
 tuned LightGBM from 0.905 to 0.594 ± 0.008 macro-F1, and a temporal split that keeps every
-file and scenario on both sides lands at the same place (0.6005), the score tracking the
-residual near-duplicate rate at r = 0.99 across seven split constructions (2026-09-02T02:33Z,
-`results/runs/20260902T022541Z_temporal_split_binary/`). At matched dimensionality under the 2,000
+file and scenario on both sides lands at the same place (0.6005,
+`results/runs/20260902T022541Z_temporal_split_binary/`). The leak has a measured length:
+macro-F1 falls from 0.876 for test rows adjacent to a training row to its floor within nine
+rows, decay length 2.5 released rows for LightGBM and 2.3 for XGBoost (N-DECAY-2b, decision
+log 2026-09-15T19:14Z, `results/runs/20260915T190906Z_leak_decay_curve_binary/`). At matched dimensionality under the 2,000
 cap, tuned XGBoost falls to 0.523 ± 0.013 and the tuned ZZ QSVM to 0.508 ± 0.012 against
 a 0.499 floor, with their contrast at +0.015 ± 0.015 and sign-unstable across partitions.
 Within-protocol comparisons in the tables below stand; absolute levels are

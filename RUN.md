@@ -141,6 +141,29 @@ python -m experiments.run_temporal_split
 python -m experiments.run_leak_rate_families
 ```
 
+14e. The leak-decay curve behind the paper's "the leak has a length" sentence, and its
+    replication on a second ICS release. `run_leak_decay_curve` needs steps 2–4 and the
+    tuned LightGBM and XGBoost studies from step 7 (about two minutes: seven fits, a radius
+    graph, and a permutation null). `run_leak_decay_gas_pipeline` needs the Morris
+    gas-pipeline release (`IanArffDataset.arff` from the same ICS datasets page as step 2,
+    placed at `data/raw/gas_pipeline/`) and nothing else; it runs library-default models.
+    Both take `--smoke`.
+```bash
+python -m experiments.run_leak_decay_curve
+```
+```bash
+python -m experiments.run_leak_decay_gas_pipeline
+```
+
+14f. File-tail split (order-preserving 60/25/15 per file, binary and three-class): shows that a
+    positional split of whole files on the released order is a class holdout, and that the
+    same split after a within-file shuffle returns to the row-level band. Needs steps 2–4 and
+    the tuned LightGBM studies from step 7. Standalone; takes `--smoke`; does not feed
+    `make_report`.
+```bash
+python -m experiments.run_file_tail_split
+```
+
 ## Reporting artifacts
 
 15. Generate every table, figure, and statistic from `results/runs/` — the only writer of
