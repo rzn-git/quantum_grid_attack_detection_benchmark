@@ -44,6 +44,10 @@ from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger
 log = get_logger(__name__)
 RUNS = REPO_ROOT / "results" / "runs"
 
+# Anchored on the stamp suffix: a bare `*surrogate_control_binary_q8` also matches the newer
+# `<stamp>_group_surrogate_control_binary_q8` runs, whose results.json has no `summary`.
+SURROGATE_CONTROL_GLOB = "*Z_surrogate_control_binary_q8"
+
 
 def latest(pattern: str, key: str | None = None, cfg: dict | None = None) -> Path | None:
     """Newest run dir matching a glob that actually carries results.
@@ -316,7 +320,7 @@ def main() -> None:
             log.info("ray-crossings table from %s + %s", rc_q.name, rc_c.name)
 
         # ---- C1 surrogate control: three arms, ordered by surrogate competence --
-        sur = latest("*surrogate_control_binary_q8")
+        sur = latest(SURROGATE_CONTROL_GLOB)
         if sur:
             surrogate_control_table(sur, "surrogate_binary_q8")
             log.info("surrogate control table from %s", sur.name)

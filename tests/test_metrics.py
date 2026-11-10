@@ -45,11 +45,12 @@ def test_paired_wilcoxon_detects_shift():
     assert res["p_value"] < 0.05
 
 
-def test_generated_tex_escapes_underscores(tmp_path):
+def test_generated_tex_has_no_bare_underscores(tmp_path):
     """Generated .tex must compile: a bare `_` outside math mode aborts pdflatex.
 
-    Model identifiers carry underscores (`rbf_svm`, `qsvm_angle_ry`), so this is a
-    build-breaking class of defect that no numeric assertion would catch.
+    Model identifiers carry underscores (`rbf_svm`, `qsvm_angle_ry`); the display names
+    printed in the tables must not, so this is a build-breaking class of defect that no
+    numeric assertion would catch.
     """
     import json
     import re
@@ -73,7 +74,7 @@ def test_generated_tex_escapes_underscores(tmp_path):
     tables.TABLE_DIR = tmp_path / "tables"
     tex = tables.accuracy_table(run, "probe").read_text(encoding="utf-8")
 
-    assert r"rbf\_svm" in tex and r"qsvm\_angle\_ry" in tex
+    assert "RBF-SVM" in tex and "QSVM (RY-angle)" in tex
     assert not re.search(r"(?<!\\)_", tex), "unescaped underscore would break pdflatex"
 
 

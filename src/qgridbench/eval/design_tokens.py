@@ -27,30 +27,44 @@ COLORS = {
     ],
 }
 
+# IEEE Transactions on Smart Grid (PES author kit, Part 4a): figure labels print at 8-10 pt.
+# Figures are drawn at the width they are placed at (one column or the full text width), so
+# native width equals placed width and every label prints at LABEL_PT.
+COLUMN_WIDTH_PT = 252.0
+TEXT_WIDTH_PT = 516.0
+LABEL_PT = 8.0
+
 FIGSIZE = {
-    "col": (3.4, 2.4),  # single IEEE column
-    "wide": (5.2, 3.0),
-    "square": (3.6, 3.2),
-    "double": (7.0, 3.0),  # full text width
+    "col": (COLUMN_WIDTH_PT / 72, 3.3),  # one column: place at \columnwidth
+    "col_tall": (COLUMN_WIDTH_PT / 72, 3.9),
+    "text_heatmap": (
+        TEXT_WIDTH_PT / 72,
+        3.2,
+    ),  # full-width heat map: place as figure* at \textwidth
+    "text": (TEXT_WIDTH_PT / 72, 3.0),  # full text width: place at \textwidth
+    "text_tall": (TEXT_WIDTH_PT / 72, 4.8),
 }
 
 
 def apply_style() -> None:
     mpl.rcParams.update(
         {
+            # embed TrueType (42) rather than Type 3 fonts: IEEE PDF checks reject Type 3
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
             "figure.dpi": 150,
             "savefig.dpi": 300,
-            "font.size": 8,
+            "font.size": LABEL_PT,
             "font.family": "serif",
-            "axes.titlesize": 8,
-            "axes.labelsize": 8,
+            "axes.titlesize": LABEL_PT,
+            "axes.labelsize": LABEL_PT,
             "axes.edgecolor": COLORS["neutral"],
             "axes.grid": True,
             "grid.color": COLORS["grid"],
             "grid.linewidth": 0.5,
-            "legend.fontsize": 7,
+            "legend.fontsize": LABEL_PT,
             "lines.linewidth": 1.5,
-            "xtick.labelsize": 7,
-            "ytick.labelsize": 7,
+            "xtick.labelsize": LABEL_PT,
+            "ytick.labelsize": LABEL_PT,
         }
     )

@@ -7,6 +7,7 @@ to figures/ as PDF (vector, paper-ready).
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import matplotlib
@@ -14,8 +15,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator, NullFormatter, ScalarFormatter
+from pennylane.drawer import MPLDrawer
 
-from qgridbench.eval.design_tokens import COLORS, FIGSIZE, apply_style
+from qgridbench.eval.design_tokens import (
+    COLORS,
+    COLUMN_WIDTH_PT,
+    FIGSIZE,
+    LABEL_PT,
+    apply_style,
+)
+from qgridbench.eval.tables import display_cell, display_model
 from qgridbench.utils.run_tracking import REPO_ROOT
 
 FIG_DIR = REPO_ROOT / "figures"
@@ -26,6 +36,39 @@ FIG_DIR = REPO_ROOT / "figures"
 # released ones — the same reason run artifacts carry a git SHA rather than a
 # timestamp in their content. Tables were already byte-stable; this closes the gap.
 PDF_METADATA = {"CreationDate": None}
+
+# IEEE PES author kit, Part 4a: figure labels are 8-10 pt at the size they print. Every
+# figure is drawn at its native placed width (design_tokens: one column or the text width),
+# so the label size is the size it prints at; a figure scaled down in LaTeX shrinks its
+# labels by the same factor. Circuits are drawn long and rescaled to one column instead.
+CIRCUIT_LABEL_PT = LABEL_PT
+CIRCUIT_PAD_IN = 0.02
+# PennyLane draws a gate box 0.75 layers wide and sizes its label for a drawing one inch per
+# layer. Shrunk to one column the pitch is about 18 pt, so an 8-pt "RZ" (12 pt wide) overran its
+# 13-pt box. A wider box (0.90 of the pitch) and 0.8-pt outlines keep every label and the
+# measurement glyph inside its box at the printed size.
+CIRCUIT_BOX_LENGTH = 0.9
+CIRCUIT_RC = {
+    "savefig.facecolor": "white",
+    "figure.facecolor": "white",
+    "axes.facecolor": "white",
+    "patch.facecolor": "white",
+    "patch.edgecolor": "black",
+    "patch.force_edgecolor": True,
+    "patch.linewidth": 0.8,
+    "lines.color": "black",
+    "lines.linewidth": 0.8,
+    "text.color": "black",
+    "path.sketch": None,
+    "font.weight": "normal",
+}
+
+
+def _plain_log_ticks(axis, subs=(1.0, 3.0)) -> None:
+    """Decimal labels on a log axis (0.1, 0.3, 1, 3): no 10^x superscripts, which print small."""
+    axis.set_major_locator(LogLocator(base=10, subs=subs))
+    axis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+    axis.set_minor_formatter(NullFormatter())
 
 
 def robustness_curves(adv_run_dir: Path, out_name: str, attack: str = "pgd") -> Path:
@@ -39,7 +82,7 @@ def robustness_curves(adv_run_dir: Path, out_name: str, attack: str = "pgd") -> 
         {float(e) for f in families for e in per_seed[0]["evasion"]["curves"][f][attack]}
     )
 
-    fig, ax = plt.subplots(figsize=FIGSIZE["wide"])
+    fig, ax = plt.subplots(figsize=FIGSIZE["col_tall"])
     for i, fam in enumerate(families):
         curve = np.array(
             [
@@ -52,15 +95,16 @@ def robustness_curves(adv_run_dir: Path, out_name: str, attack: str = "pgd") -> 
         )
         mean, std = curve.mean(0), curve.std(0)
         color = COLORS["series"][i % len(COLORS["series"])]
-        ax.plot(eps_grid, mean, marker="o", label=fam, color=color, linewidth=1.6)
+        ax.plot(eps_grid, mean, marker="o", label=display_model(fam), color=color, linewidth=1.6)
         ax.fill_between(eps_grid, mean - std, mean + std, color=color, alpha=0.15)
     # unit is fractions of the TRAIN per-feature sigma, not raw PCA coordinates
     # (attacks/evasion.py SCALE CONTRACT) — say so on the axis, not just in prose
-    ax.set_xlabel(rf"{attack.upper()} $\epsilon$  (L$_\infty$ budget, units of train $\sigma$)")
-    ax.set_ylabel("test macro-F1")
-    ax.legend(fontsize=7, ncol=2, frameon=False)
+    ax.set_xlabel(f"{attack.upper()} perturbation budget\n(training standard deviations)")
+    ax.set_ylabel("Test macro-F1")
+    # legend under the axes: eight 8-pt entries would cover the curves inside a column
+    fig.legend(*ax.get_legend_handles_labels(), loc="lower center", ncol=2, frameon=False)
     out = FIG_DIR / f"{out_name}.pdf"
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.2, 1, 1))
     fig.savefig(out, metadata=PDF_METADATA)
     plt.close(fig)
     return out
@@ -76,7 +120,11 @@ def _key(seed, fam, attack, e):
 
 
 def transfer_heatmap(adv_run_dir: Path, out_name: str) -> Path:
-    """Source x target degradation matrix (mean over seeds), at max epsilon."""
+    """Source x target degradation matrix (mean over seeds), at max epsilon.
+
+    Drawn at the full text width (place as a two-column `figure*`): eight target columns at
+    one column width left the 8-pt cell values touching each other.
+    """
     apply_style()
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     data = json.loads((adv_run_dir / "results.json").read_text())
@@ -85,12 +133,19 @@ def transfer_heatmap(adv_run_dir: Path, out_name: str) -> Path:
     targets = list(mats[0][sources[0]].keys())
     M = np.mean([[[m[s][t] for t in targets] for s in sources] for m in mats], axis=0)
 
-    fig, ax = plt.subplots(figsize=FIGSIZE["square"])
+    fig, ax = plt.subplots(figsize=FIGSIZE["text_heatmap"], layout="constrained")
     im = ax.imshow(M, cmap="viridis", vmin=0, vmax=1, aspect="auto")
-    ax.set_xticks(range(len(targets)), targets, rotation=45, ha="right", fontsize=7)
-    ax.set_yticks(range(len(sources)), sources, fontsize=7)
-    ax.set_xlabel("target model")
-    ax.set_ylabel("attack source")
+    ax.grid(False)
+    ax.set_xticks(
+        range(len(targets)),
+        [display_model(t) for t in targets],
+        rotation=45,
+        ha="right",
+        rotation_mode="anchor",
+    )
+    ax.set_yticks(range(len(sources)), [display_model(t) for t in sources])
+    ax.set_xlabel("Target model")
+    ax.set_ylabel("Attack source\nmodel")
     for i in range(len(sources)):
         for j in range(len(targets)):
             ax.text(
@@ -99,26 +154,64 @@ def transfer_heatmap(adv_run_dir: Path, out_name: str) -> Path:
                 f"{M[i, j]:.2f}",
                 ha="center",
                 va="center",
-                fontsize=6,
+                fontsize=LABEL_PT,
                 color="white" if M[i, j] < 0.6 else "black",
             )
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.colorbar(
+        im,
+        ax=ax,
+        orientation="horizontal",
+        fraction=0.06,
+        pad=0.04,
+        label="Test macro-F1 under attack",
+    )
     out = FIG_DIR / f"{out_name}.pdf"
-    fig.tight_layout()
     fig.savefig(out, metadata=PDF_METADATA)
     plt.close(fig)
     return out
 
 
-def circuit_diagrams(n_qubits: int = 3) -> list[Path]:
+@contextmanager
+def _circuit_style():
+    """Draw circuits with the print-size outlines and box width above, then restore both."""
+    previous = MPLDrawer._box_length
+    MPLDrawer._box_length = CIRCUIT_BOX_LENGTH
+    try:
+        with plt.rc_context(CIRCUIT_RC):
+            yield
+    finally:
+        MPLDrawer._box_length = previous
+
+
+def _save_circuit(fig, out: Path) -> None:
+    """Scale a drawn circuit so its native width is one column, then save it tightly.
+
+    PennyLane lays a circuit out at one inch per layer and sets gate labels in points, so a
+    long circuit shrunk to a column loses its label size. Here the text stays at
+    CIRCUIT_LABEL_PT and the drawing is resized instead: the gate boxes shrink around the
+    text, which is why the circuits are drawn with few layers and without angle values.
+    """
+    target = COLUMN_WIDTH_PT - 2 * CIRCUIT_PAD_IN * 72
+    tight_pt = fig.get_tightbbox(fig.canvas.get_renderer()).width * 72
+    k = target / tight_pt
+    fig.set_size_inches(fig.get_figwidth() * k, fig.get_figheight() * k)
+    fig.savefig(out, metadata=PDF_METADATA, bbox_inches="tight", pad_inches=CIRCUIT_PAD_IN)
+    plt.close(fig)
+
+
+def circuit_diagrams(n_qubits: int = 3, zz_reps: int = 1) -> list[Path]:
     """Render the actual model circuits (paper methodology figure).
 
-    Draws the ZZ feature map from qkernel's own circuit builder (SSOT — the drawing
+    Draws the ZZ feature map from qkernel's own circuit builder (SSOT: the drawing
     can never drift from what the experiments ran) and the VQC circuit
     (AngleEmbedding + StronglyEntanglingLayers, mirroring vqc.py's `circuit`),
     gate-expanded so the reader sees actual operations, not template boxes.
-    Three qubits keeps the ZZ map's all-pairs entangling block legible at column
-    width; the caption states the experiments run 8--16 qubits.
+
+    Both PDFs are one 252-pt column wide natively and carry 8-pt gate labels, so placing
+    each at the column width keeps the labels at 8 pt. To get there the drawings show three
+    qubits (the experiments run 8--16), ONE repetition of the ZZ map (the deployed map
+    repeats that block twice), and gate names without angle values: the angles are 2 x_i on
+    the single-qubit RZ gates and 2 x_i x_j on the pair RZ gates, which the caption states.
     """
     import pennylane as qml
 
@@ -126,12 +219,14 @@ def circuit_diagrams(n_qubits: int = 3) -> list[Path]:
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     x = np.round(np.linspace(0.4, 1.3, n_qubits), 2)
+    draw = {"style": "rcParams", "decimals": None, "fontsize": CIRCUIT_LABEL_PT}
     outs: list[Path] = []
+    apply_style()
 
-    fig, _ = qml.draw_mpl(_circuit_state_fn("zz", n_qubits), style="black_white")(x)
-    out = FIG_DIR / "circuit_zz.pdf"
-    fig.savefig(out, metadata=PDF_METADATA, bbox_inches="tight")
-    plt.close(fig)
+    with _circuit_style():
+        fig, _ = qml.draw_mpl(_circuit_state_fn("zz", n_qubits, n_reps=zz_reps), **draw)(x)
+        out = FIG_DIR / "circuit_zz.pdf"
+        _save_circuit(fig, out)
     outs.append(out)
 
     dev = qml.device("default.qubit", wires=n_qubits)
@@ -144,10 +239,10 @@ def circuit_diagrams(n_qubits: int = 3) -> list[Path]:
         qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
         return qml.expval(qml.PauliZ(0))
 
-    fig, _ = qml.draw_mpl(vqc_circuit, style="black_white", level="device")(x, weights)
-    out = FIG_DIR / "circuit_vqc.pdf"
-    fig.savefig(out, metadata=PDF_METADATA, bbox_inches="tight")
-    plt.close(fig)
+    with _circuit_style():
+        fig, _ = qml.draw_mpl(vqc_circuit, level="device", **draw)(x, weights)
+        out = FIG_DIR / "circuit_vqc.pdf"
+        _save_circuit(fig, out)
     outs.append(out)
     return outs
 
@@ -171,9 +266,7 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
 
     cells = sorted({r["cell"] for r in rows}, key=_cell_key)
 
-    fig, axes = plt.subplots(
-        2, len(cells), figsize=(FIGSIZE["wide"][0] * 1.6, FIGSIZE["wide"][1] * 1.7), sharex=True
-    )
+    fig, axes = plt.subplots(2, len(cells), figsize=FIGSIZE["text_tall"], sharex=True)
     for j, cell in enumerate(cells):
         sub = sorted((r for r in rows if r["cell"] == cell), key=lambda r: r["bandwidth"])
         bw = [r["bandwidth"] for r in sub]
@@ -185,7 +278,7 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
             marker="o",
             markersize=3,
             color=COLORS["series"][0],
-            label="median off-diag fidelity",
+            label="Median off-diagonal fidelity",
         )
         ax.plot(
             bw,
@@ -193,7 +286,7 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
             marker="s",
             markersize=3,
             color=COLORS["series"][1],
-            label="top-eigenvalue share",
+            label="Top-eigenvalue share",
         )
         ax.plot(
             bw,
@@ -201,14 +294,14 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
             marker="^",
             markersize=3,
             color=COLORS["series"][2],
-            label="frac. pairs < 0.01",
+            label="Fraction of pairs below 0.01",
         )
         ax.set_ylim(-0.05, 1.05)
         ax.set_xscale("log")
-        ax.set_title(cell, fontsize=8)
+        _plain_log_ticks(ax.xaxis, subs=(1.0,))  # panels are 120 pt wide: decades only
+        ax.set_title(display_cell(cell))
         if j == 0:
-            ax.set_ylabel("spectral shape")
-            ax.legend(fontsize=5.5, frameon=False)
+            ax.set_ylabel("Spectral shape (fraction)")
 
         ax = axes[1, j]
         ax.plot(
@@ -217,7 +310,7 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
             marker="o",
             markersize=3,
             color=COLORS["series"][0],
-            label="val macro-F1",
+            label="Validation macro-F1",
         )
         ax.axvline(sub[0]["tuned_bandwidth"], color="gray", linestyle=":", linewidth=1)
         ax2 = ax.twinx()
@@ -227,7 +320,7 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
             marker="s",
             markersize=3,
             color=COLORS["series"][1],
-            label="$g$",
+            label="Geometric difference",
         )
         ax2.plot(
             bw,
@@ -235,20 +328,30 @@ def bandwidth_diagnostics_figure(bw_json: Path, out_name: str) -> Path:
             marker="^",
             markersize=3,
             color=COLORS["series"][2],
-            label="KTA",
+            label="Kernel-target alignment",
         )
         ax2.set_yscale("log")
-        ax.set_xlabel("encoding bandwidth")
+        _plain_log_ticks(ax2.yaxis, subs=(1.0,))
+        ax.set_xlabel("Encoding bandwidth\n(scale factor)")
         if j == 0:
-            ax.set_ylabel("val macro-F1")
+            ax.set_ylabel("Validation macro-F1")
             h1, l1 = ax.get_legend_handles_labels()
             h2, l2 = ax2.get_legend_handles_labels()
-            ax.legend(h1 + h2, l1 + l2, fontsize=5.5, frameon=False)
+            bottom_handles = h1 + h2
+            bottom_labels = l1 + l2
         if j == len(cells) - 1:
-            ax2.set_ylabel("$g$ / KTA (log)")
+            ax2.set_ylabel("Geometric difference,\nalignment (log scale)")
 
+    # legends sit outside the panels: seven 8-pt entries would cover the curves
+    fig.legend(
+        *axes[0, 0].get_legend_handles_labels(),
+        loc="upper center",
+        ncol=3,
+        frameon=False,
+    )
+    fig.legend(bottom_handles, bottom_labels, loc="lower center", ncol=3, frameon=False)
     out = FIG_DIR / f"{out_name}.pdf"
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.1, 1, 0.92))
     fig.savefig(out, metadata=PDF_METADATA)
     plt.close(fig)
     return out
@@ -269,7 +372,7 @@ def poisoning_sensor_figure(adv_run_dir: Path, out_name: str) -> Path:
     poison = data["poisoning"]
     families = list(per_seed[0]["sensor_noise"].keys())
 
-    fig, (ax_p, ax_n) = plt.subplots(1, 2, figsize=FIGSIZE["double"], sharey=True)
+    fig, (ax_p, ax_n) = plt.subplots(1, 2, figsize=FIGSIZE["text"], sharey=True)
 
     rates = sorted(float(r) for r in poison)
     for i, fam in enumerate(families):
@@ -278,13 +381,12 @@ def poisoning_sensor_figure(adv_run_dir: Path, out_name: str) -> Path:
             [r * 100 for r in rates],
             [poison[_num_key(poison, r)][fam] for r in rates],
             marker="o",
-            label=fam,
+            label=display_model(fam),
             color=color,
             linewidth=1.4,
         )
-    ax_p.set_xlabel("training labels flipped (%)")
-    ax_p.set_ylabel("clean-test macro-F1")
-    ax_p.legend(fontsize=6.5, ncol=2, frameon=False)
+    ax_p.set_xlabel("Training labels flipped (%)")
+    ax_p.set_ylabel("Macro-F1 on clean test data")
 
     snrs = sorted((int(s) for s in per_seed[0]["sensor_noise"][families[0]]), reverse=True)
     xs = list(range(len(snrs) + 1))  # clean + descending SNR = increasing severity
@@ -296,11 +398,12 @@ def poisoning_sensor_figure(adv_run_dir: Path, out_name: str) -> Path:
         std = np.concatenate([[clean.std()], curve.std(0)])
         ax_n.plot(xs, mean, marker="o", color=color, linewidth=1.4)
         ax_n.fill_between(xs, mean - std, mean + std, color=color, alpha=0.15)
-    ax_n.set_xticks(xs, ["clean"] + [f"{s} dB" for s in snrs])
-    ax_n.set_xlabel("sensor noise (SNR)")
+    ax_n.set_xticks(xs, ["Clean"] + [str(s) for s in snrs])
+    ax_n.set_xlabel("Sensor-noise signal-to-noise ratio (dB)")
 
+    fig.legend(*ax_p.get_legend_handles_labels(), loc="lower center", ncol=4, frameon=False)
     out = FIG_DIR / f"{out_name}.pdf"
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.18, 1, 1))
     fig.savefig(out, metadata=PDF_METADATA)
     plt.close(fig)
     return out
@@ -330,10 +433,11 @@ def bandwidth_fragility_figure(frag_json: Path, out_name: str) -> Path:
     flips = np.array([p["flip_rate"][eps]["draws"] for p in points])
 
     fig, ax = plt.subplots(figsize=FIGSIZE["col"])
-    ax.plot(bws, f1, marker="o", color=COLORS["primary"], label="clean macro-F1")
+    ax.plot(bws, f1, marker="o", color=COLORS["primary"], label="Clean macro-F1")
     ax.set_xscale("log")
-    ax.set_xlabel("encoding bandwidth")
-    ax.set_ylabel("clean macro-F1", color=COLORS["primary"])
+    _plain_log_ticks(ax.xaxis)
+    ax.set_xlabel("Encoding bandwidth (scale factor)")
+    ax.set_ylabel("Clean macro-F1", color=COLORS["primary"])
     ax.tick_params(axis="y", labelcolor=COLORS["primary"])
     ax.axvline(bws[int(np.argmax(f1))], color=COLORS["neutral"], linestyle=":", linewidth=1)
 
@@ -345,9 +449,12 @@ def bandwidth_fragility_figure(frag_json: Path, out_name: str) -> Path:
         marker="s",
         color=COLORS["accent"],
         capsize=2,
-        label=f"flip rate @ {float(eps)}$\\sigma$",
+        label=f"Flip rate, random perturbation of {float(eps)} standard deviations",
     )
-    ax2.set_ylabel(f"random flip rate @ {float(eps)}$\\sigma$", color=COLORS["accent"])
+    ax2.set_ylabel(
+        f"Random-perturbation flip rate\n(fraction, {float(eps)} standard deviations)",
+        color=COLORS["accent"],
+    )
     ax2.tick_params(axis="y", labelcolor=COLORS["accent"])
     ax2.grid(False)
 
@@ -362,7 +469,7 @@ def barren_plateau_figure(scan_json: Path, depth_json: Path, out_name: str) -> P
     """Trainability exhibit: gradient variance decays on the qubit axis, not depth.
 
     Left: single-parameter gradient variance at initialization vs qubit count
-    (controlled scan, log y) with a 2^-n reference anchored at the smallest width.
+    (controlled scan, log10 y) with a 2^-n reference anchored at the smallest width.
     Right: gradient-norm variance during training vs circuit depth (depth sweep) —
     flat, on a linear axis so flatness is visible. The two panels measure different
     quantities (init-time single-parameter variance vs training-time norm variance);
@@ -377,20 +484,29 @@ def barren_plateau_figure(scan_json: Path, depth_json: Path, out_name: str) -> P
     depths = sorted(int(k.split("_")[1]) for k in depth_sweep)
     gvar = [depth_sweep[f"depth_{d}"]["grad_norm_var_mean"] for d in depths]
 
-    fig, (ax_q, ax_d) = plt.subplots(1, 2, figsize=FIGSIZE["wide"])
-    ax_q.semilogy(qubits, var, marker="o", color=COLORS["primary"], label="measured")
+    fig, (ax_q, ax_d) = plt.subplots(1, 2, figsize=FIGSIZE["text"])
+    # log10 on a linear axis with integer ticks: a log axis labels its decades 10^-7 ... in 5.6-pt
+    # superscripts, and six decades are too many for decimal labels
     ref = [var[0] * 2.0 ** (qubits[0] - q) for q in qubits]
-    ax_q.semilogy(qubits, ref, linestyle="--", color=COLORS["neutral"], label=r"$2^{-n}$ reference")
+    ax_q.plot(qubits, np.log10(var), marker="o", color=COLORS["primary"], label="Measured")
+    ax_q.plot(
+        qubits,
+        np.log10(ref),
+        linestyle="--",
+        color=COLORS["neutral"],
+        label="Reference (halves per qubit)",
+    )
     ax_q.set_xticks(qubits)
-    ax_q.set_xlabel("qubits (depth fixed)")
-    ax_q.set_ylabel("Var[$\\partial_\\theta \\mathcal{L}$] at init")
-    ax_q.legend(fontsize=7, frameon=False)
+    ax_q.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax_q.set_xlabel("Number of qubits (depth fixed)")
+    ax_q.set_ylabel("Loss-gradient variance\nat initialization (log10)")
+    ax_q.legend(loc="upper right", frameon=False)
 
     ax_d.plot(depths, gvar, marker="s", color=COLORS["accent"])
     ax_d.set_xticks(depths)
     ax_d.set_ylim(0, max(gvar) * 1.3)
-    ax_d.set_xlabel("depth (8 qubits)")
-    ax_d.set_ylabel("grad-norm variance (training)")
+    ax_d.set_xlabel("Circuit depth (layers, 8 qubits)")
+    ax_d.set_ylabel("Gradient-norm variance\nduring training")
 
     out = FIG_DIR / f"{out_name}.pdf"
     fig.tight_layout()
@@ -404,19 +520,24 @@ def data_efficiency_curve(de_run_dir: Path, out_name: str) -> Path:
     apply_style()
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     data = json.loads((de_run_dir / "data_efficiency.json").read_text())
-    fig, ax = plt.subplots(figsize=FIGSIZE["wide"])
+    fig, ax = plt.subplots(figsize=FIGSIZE["col"])
     for i, (name, series) in enumerate(data.items()):
         sizes = sorted(int(s) for s in series)
         mean = [series[str(s)]["mean"] for s in sizes]
         std = [series[str(s)]["std"] for s in sizes]
         color = COLORS["series"][i % len(COLORS["series"])]
-        ax.errorbar(sizes, mean, yerr=std, marker="s", label=name, color=color, capsize=2)
+        ax.errorbar(
+            sizes, mean, yerr=std, marker="s", label=display_model(name), color=color, capsize=2
+        )
     ax.set_xscale("log")
-    ax.set_xlabel("training-set size")
-    ax.set_ylabel("test macro-F1")
-    ax.legend(fontsize=7, frameon=False)
+    ax.set_xticks(sizes)
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.set_xlabel("Training-set size (samples)")
+    ax.set_ylabel("Test macro-F1")
+    fig.legend(*ax.get_legend_handles_labels(), loc="lower center", ncol=1, frameon=False)
     out = FIG_DIR / f"{out_name}.pdf"
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.2, 1, 1))
     fig.savefig(out, metadata=PDF_METADATA)
     plt.close(fig)
     return out
