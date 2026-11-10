@@ -22,6 +22,10 @@ preferred-citation:
     - family-names: "Islam"
       given-names: "Md Rezwanul"
       orcid: "https://orcid.org/0009-0002-4100-3796"
+    - family-names: "Shihavuddin"
+      given-names: "A. S. M."
+      affiliation: "University of Liberal Arts Bangladesh"
+      orcid: "https://orcid.org/0000-0002-4137-9374"
   title: "Benchmarking Quantum Machine Learning for Power-System Attack Detection: Evaluation Choices Decide the Outcome Before the Models Do"
   year: 2026
   month: 8
