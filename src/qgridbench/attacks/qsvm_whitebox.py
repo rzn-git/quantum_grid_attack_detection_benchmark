@@ -174,27 +174,38 @@ def assert_matches_reference(
 ) -> dict:
     """Fail-loud equivalence gate; returns the measured discrepancies for logging.
 
-    Forward, two comparisons at different precisions — measured, not assumed
-    (tmp probe 2026-08-14, decision log): the deployed kernel path stores
-    statevectors as complex64, which by itself moves the decision value by
-    ~2e-3 at 8 qubits, so a single strict tolerance would fail for a reason that
-    has nothing to do with this graph.
-      1. vs the EXACT (complex128) Gram over the same states — the mathematical
-         identity this graph must satisfy; strict `fwd_tol`.
-      2. vs the DEPLOYED complex64 path the rest of the study runs on — bounded
+    Forward, three comparisons at different precisions — measured, not assumed
+    (tmp probe 2026-08-14, decision log): the deployed kernel path works in
+    complex64, which by itself moves the decision value by ~2e-3 at 8 qubits on
+    the MSU/ORNL model, so a single strict tolerance would fail for a reason that
+    has nothing to do with this graph. (Measured 2026-11-21: the gap is the
+    complex64 accumulation of the overlap product, not the storage of the states,
+    which gives 2e-7; it grows with the dual coefficients, and reaches 7.1e-3 on
+    the gas data with pressure log-scaled, where the tuned C is 913.)
+      1. vs the EXACT Gram — check-row states built at complex128 from float64 angles,
+         accumulated in complex128, not clipped — the mathematical identity this graph
+         must satisfy; strict `fwd_tol`. (Until 2026-11-18 this reference built the
+         check-row states at complex64 from the scaler's float32 angles and clipped the
+         Gram to [0, 1]. At the gas data's near-degenerate small bandwidths that rounding
+         alone reached 1.3e-4 and failed the gate while the white-box sat 4.8e-10 from the
+         exact value; decision log 2026-11-18, P11c incident.)
+      2. vs the EVALUATED exact path, `fidelity_kernel(..., exact=True)` over the stored
+         complex64 states: what P9a and P11c evaluate through; recorded.
+      3. vs the DEPLOYED complex64 path the rest of the study runs on — bounded
          by the looser `deployed_tol` and returned, so growth is caught.
-    Predictions from both paths must additionally agree on every checked row;
-    disagreement means the attacked model is not the evaluated model. That check is
-    unconditional and is the one that actually protects the comparison.
+    Predictions must additionally agree on every checked row with the path the caller
+    evaluates on; disagreement means the attacked model is not the evaluated model. That
+    check is unconditional and is the one that actually protects the comparison.
 
     `deployed_tol=None` records the deployed discrepancy WITHOUT blocking on it. That is
     legitimate for exactly one kind of caller: one that also EVALUATES through the exact
     complex128 Gram (`fidelity_kernel(..., exact=True)`), so attack and evaluation share a
     precision and the deployed comparison is a diagnostic rather than a correctness
     condition. It is not a way to wave through a failing gate — comparison 1 stays strict,
-    prediction agreement stays mandatory, and the measured value is still returned for the
-    caller to record. P9a needs it because the near-degenerate Gram at small bandwidth
-    amplifies complex64 accumulation error into the decision value (see `fidelity_kernel`).
+    prediction agreement with both the exact and the evaluated path is mandatory, and the
+    measured values are still returned for the caller to record. P9a needs it because the
+    near-degenerate Gram at small bandwidth amplifies complex64 accumulation error into the
+    decision value (see `fidelity_kernel`).
 
     Gradient: central finite differences of the torch decision function on
     `n_grad_rows` rows (all input dims) — an independent check of the autograd
@@ -203,33 +214,36 @@ def assert_matches_reference(
     A = angle_scaler.transform(X_check)
     states_check = compute_states(A, wb.encoding, bandwidth=wb.bandwidth)
     states_tr = np.asarray(states_train)
+    A64 = angle_scaler.transform(np.asarray(X_check, dtype=np.float64))
+    states_check_exact = compute_states(
+        A64, wb.encoding, bandwidth=wb.bandwidth, dtype=np.complex128
+    )
 
     f_deployed = svc.decision_function(fidelity_kernel(states_check, states_tr))
-    K_exact = np.clip(
-        np.abs(states_check.astype(np.complex128).conj() @ states_tr.astype(np.complex128).T) ** 2,
-        0.0,
-        1.0,
-    )
+    f_evaluated = svc.decision_function(fidelity_kernel(states_check, states_tr, exact=True))
+    K_exact = np.abs(states_check_exact.conj() @ states_tr.astype(np.complex128).T) ** 2
     f_exact = svc.decision_function(K_exact)
     f_wb = wb.decision_function(X_check)
 
     fwd_err = float(np.max(np.abs(f_wb - f_exact) / (1.0 + np.abs(f_exact))))
     if fwd_err > fwd_tol:
         raise AssertionError(f"QSVM white-box forward mismatch: rel err {fwd_err:.2e} > {fwd_tol}")
+    evaluated_err = float(np.max(np.abs(f_wb - f_evaluated) / (1.0 + np.abs(f_evaluated))))
     deployed_err = float(np.max(np.abs(f_wb - f_deployed) / (1.0 + np.abs(f_deployed))))
     if deployed_tol is not None and deployed_err > deployed_tol:
         raise AssertionError(
             f"QSVM white-box vs deployed float32 path: rel err {deployed_err:.2e} > {deployed_tol}"
         )
     # "The attacked model must BE the evaluated model" — so this blocks on agreement with
-    # whichever path the caller evaluates on, and records the other. Callers on the deployed
+    # whichever path the caller evaluates on, and records the others. Callers on the deployed
     # path (P5a/P7b/P8) are checked against it; a caller that evaluates through the exact
-    # complex128 Gram (deployed_tol=None) is checked against that, because comparing it to a
-    # path it never uses would test the wrong reference. Neither branch is optional.
+    # complex128 Gram (deployed_tol=None) is checked against both the exact reference and the
+    # evaluated path it actually scores on. Neither branch is optional.
     n_agree_deployed = int((np.sign(f_wb) == np.sign(f_deployed)).sum())
     n_agree_exact = int((np.sign(f_wb) == np.sign(f_exact)).sum())
+    n_agree_evaluated = int((np.sign(f_wb) == np.sign(f_evaluated)).sum())
     reference, n_agree = (
-        ("exact complex128", n_agree_exact)
+        ("exact complex128", min(n_agree_exact, n_agree_evaluated))
         if deployed_tol is None
         else ("deployed float32", n_agree_deployed)
     )
@@ -263,6 +277,7 @@ def assert_matches_reference(
     )
     return {
         "forward_rel_err": fwd_err,
+        "evaluated_exact_rel_err": evaluated_err,
         "deployed_float32_rel_err": deployed_err,
         "grad_rel_err": grad_err,
         "predictions_agree": n_agree,
@@ -271,5 +286,6 @@ def assert_matches_reference(
         # exactly still surfaces how far the deployed pipeline sits from it
         "predictions_agree_deployed": n_agree_deployed,
         "predictions_agree_exact": n_agree_exact,
+        "predictions_agree_evaluated": n_agree_evaluated,
         "n_check": int(len(X_check)),
     }

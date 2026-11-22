@@ -1,0 +1,45 @@
+claim,dataset,run,file,key,fmt,reproduces,note
+accuracy,msu,merged_rq1_binary_pca8,results.json,xgb/aggregate/macro_f1/mean - qsvm_zz/aggregate/macro_f1/mean,.3f,origin,"XGBoost minus QSVM (ZZ), the best of each group at PCA-8 (row split)"
+accuracy,gas,20261119T113544Z_gas_accuracy_verdict_gas_binary_slog,results.json,pca8/delta,.3f,partial,H-C2 PARITY with pressure log-scaled: the best classical model leads by less than the 0.02 margin
+accuracy,fdia14,20261118T161541Z_fdia_h1_verdict_fdia14_binary,results.json,pca8/d_quantum_minus_classical,neg:.3f,yes,H1 HOLDS at the accuracy ceiling (shown as classical minus quantum)
+accuracy,fdia118,20261118T233905Z_fdia_h1_verdict_fdia118_binary,results.json,pca8/d_quantum_minus_classical,neg:.3f,yes,H1 HOLDS at the accuracy ceiling (shown as classical minus quantum)
+split,msu,20260816T023620Z_group_split_control_binary,results.json,verdict/level_drop,.3f,origin,row split minus whole files held out
+split,gas,20261119T110736Z_gas_split_ladder_gas_binary_slog,results.json,verdict/ladder/drop_R_minus_g_time,.3f,yes,H-L1 at its 0.05 threshold with pressure log-scaled
+split,fdia14,20261119T031049Z_fdia_split_gap,results.json,verdict/G/fdia14_binary,.3f,no,H4: no near-duplicate rows (below the 0.02 kill line)
+split,fdia118,20261119T031049Z_fdia_split_gap,results.json,verdict/G/fdia118_binary,.3f,partial,H4 INTERMEDIATE
+surrogate_specification,msu,20261118T162803Z_vqc_table1_regeneration_binary,per_figure.csv,inventory_id=1;figure=forward/reverse| as tuned surrogate>depth6 over inventory_id=4;figure=forward/reverse| balanced surrogate>depth6,fold:.2f,origin,how many times the class-weighted fit moves the transfer ratio at depth 6 (4.62 as tuned; 0.87 balanced)
+surrogate_specification,gas,20261121T215242Z_gas_robustness_verdict_gas_binary_slog,results.json,H_C1c/forward_over_reverse/unweighted over H_C1c/forward_over_reverse/balanced,fold:.2f,no,how many times the class-weighted fit moves the transfer ratio (0.37 as tuned; 0.33 class-weighted; needs 2x; the run stores it as item2_factor)
+surrogate_specification,fdia14,20261118T214119Z_fdia_h2_verdict_fdia14_binary,results.json,asymmetry/mlp/forward_over_reverse over asymmetry/mlp_balanced/forward_over_reverse,fold:.2f,no,no fit effect: unweighted 0.82 vs balanced 0.83 (read by the gas rule; the grid's own registered ratio test passes)
+surrogate_specification,fdia118,20261119T031058Z_fdia_h2_verdict_fdia118_binary,results.json,asymmetry/mlp/forward_over_reverse over asymmetry/mlp_balanced/forward_over_reverse,fold:.2f,no,no fit effect: unweighted 0.51 vs balanced 0.51 (read by the gas rule; the grid's own registered ratio test passes)
+attack_availability,msu,20261121T215512Z_whitebox_worst_radius,results.json,sources/msu/availability/A_worst,.2f,origin,A = QSVM transfer minus white-box retention in the P5a run with the white-box attack read at its worst radius inside 0.5 sigma (0.917 - 0.023; 0.853 read at the budget; Table III's transfer figure is 0.886)
+attack_availability,gas,20261121T215512Z_whitebox_worst_radius,results.json,sources/gas_slog/availability/A_worst,.2f,yes,A = QSVM transfer retention at 0.5 sigma (0.686) minus white-box retention at its worst radius 0.3 sigma (0.124); registered bar 0.30; the white-box run scores the QSVM on the exact complex128 path (decision log 2026-11-21T18:38Z)
+attack_availability,fdia14,20261121T215512Z_whitebox_worst_radius,results.json,sources/fdia14/availability/A_worst,.2f,no,A below the registered 0.20 at the budget and at the worst radius (the same radius here)
+attack_availability,fdia118,20261121T215512Z_whitebox_worst_radius,results.json,sources/fdia118/availability/A_worst,.2f,no,A below the registered 0.20: 0.013 at the budget and 0.083 at the worst radius
+attack_objective,msu,20261120T122742Z_regularization_radii_verdict,results.json,per_c/835.2430509931106/mass/worst/f1_minus_floor - per_c/835.2430509931106/loss/worst/f1_minus_floor,.2f,origin,"distance-seeking minus loss-seeking macro-F1, each at its worst tested radius"
+attack_objective,gas,20261121T215242Z_gas_robustness_verdict_gas_binary_slog,results.json,items/4_attack_objective,,yes,"H-K item 4, registered in black-box form: the QSVM is second by HopSkipJump distortion (0.098 against the VQC's 0.094 sigma, inside the restart spread) and first by Square damage"
+attack_objective,fdia14,,,,,not_tested,
+attack_objective,fdia118,,,,,not_tested,
+starting_point,msu,20261120T094143Z_hsj_restarts_pooled_binary_q8,results.json,summary/qsvm/cv,.2f,origin,QSVM HopSkipJump distortion CV over restarts
+starting_point,gas,20261121T215242Z_gas_robustness_verdict_gas_binary_slog,results.json,item_detail/hsj/cv/qsvm,.2f,partial,"item 5 true by the letter (the order of the models changes between restarts: the QSVM and the VQC, and two pairs of classical models); the QSVM's own CV is under the 0.15 line"
+starting_point,fdia14,,,,,not_tested,
+starting_point,fdia118,,,,,not_tested,
+measurement_geometry,msu,20261118T145335Z_adversarial_binary_q8_random_vqc_table1,results.json,per_seed/0/random_control/qsvm/by_radius/0.5/flip_rate over per_seed/0/random_control/rbf_svm/by_radius/0.5/flip_rate,.2f,origin,QSVM over RBF-SVM random-noise flip rate at 0.5 sigma
+measurement_geometry,gas,20261121T215242Z_gas_robustness_verdict_gas_binary_slog,results.json,item_detail/random_flip_rate_at_0.5/qsvm over item_detail/random_flip_rate_at_0.5/rbf_svm,.2f,no,QSVM over RBF-SVM random-noise flip rate at 0.5 sigma (needs 1.5)
+measurement_geometry,fdia14,,,,,not_tested,
+measurement_geometry,fdia118,,,,,not_tested,
+reading_radius,msu,20261121T215512Z_whitebox_worst_radius,results.json,sources/msu/reading_radius/D_rbf,.2f,origin,D = tuned RBF-SVM white-box retention read at 0.5 sigma minus read at the worst radius inside it (0.685 - 0.243)
+reading_radius,gas,20261121T215512Z_whitebox_worst_radius,results.json,sources/gas_slog/reading_radius/D_rbf,.2f,partial,D between the registered 0.05 and 0.20 lines: the RBF-SVM's worst radius is 0.3 sigma (decision log 2026-11-20T10:17Z)
+reading_radius,fdia14,20261121T215512Z_whitebox_worst_radius,results.json,sources/fdia14/reading_radius/D_rbf,.2f,no,D under the registered 0.05 line
+reading_radius,fdia118,20261121T215512Z_whitebox_worst_radius,results.json,sources/fdia118/reading_radius/D_rbf,.2f,no,D under the registered 0.05 line (the QSVM's D is 0.070 there)
+kernel_whitebox_contrast,msu,20261121T215512Z_whitebox_worst_radius,results.json,sources/msu/contrast/qsvm_minus_rbf_worst,+.2f,origin,QSVM minus RBF-SVM white-box retention with each model at its worst radius inside 0.5 sigma (0.023 - 0.243; -0.62 read at the budget)
+kernel_whitebox_contrast,gas,20261121T215512Z_whitebox_worst_radius,results.json,sources/gas_slog/contrast/qsvm_minus_rbf_worst,+.2f,partial,H-C1a INTERMEDIATE: the QSVM ends below the RBF-SVM at every radius (p 0.002) by less than the registered 0.20; QSVM minus RBF-SVM
+kernel_whitebox_contrast,fdia14,20261121T215512Z_whitebox_worst_radius,results.json,sources/fdia14/contrast/qsvm_minus_rbf_worst,+.2f,no,QSVM lower on 10 of 10 starts but short of the registered -0.10: -0.099 at the budget and -0.079 at the worst radii
+kernel_whitebox_contrast,fdia118,20261121T215512Z_whitebox_worst_radius,results.json,sources/fdia118/contrast/qsvm_minus_rbf_worst,+.2f,no,QSVM lower on 10 of 10 starts but short of the registered -0.10: -0.019 at the budget and -0.073 at the worst radii
+per_class_reorder,msu,20261116T072807Z_evasion_per_class_binary_q8,results.json,summary/spearman_retention_vs_attack_recall,.2f,origin,Spearman rho (reorder below 0.9)
+per_class_reorder,gas,20261121T215242Z_gas_robustness_verdict_gas_binary_slog,results.json,per_class/spearman_retention_vs_attack_recall,.2f,yes,reorder
+per_class_reorder,fdia14,20261118T193429Z_evasion_per_class_fdia14_binary_q8,results.json,summary/spearman_retention_vs_attack_recall,.2f,yes,reorder
+per_class_reorder,fdia118,20261119T010332Z_evasion_per_class_fdia118_binary_q8,results.json,summary/spearman_retention_vs_attack_recall,.2f,yes,reorder
+physics_removes_tree_transfer,msu,20261116T094857Z_consistent_relay_attack_binary_q8_joint,factorial.json,verdict,,origin,E-NS8(a) PHYSICS
+physics_removes_tree_transfer,gas,,,,,not_tested,no measurement model
+physics_removes_tree_transfer,fdia14,20261118T195101Z_fdia_consistent_attack_fdia14_binary,results.json,summary/H3/branch,,yes,H3 PHYSICS
+physics_removes_tree_transfer,fdia118,20261119T013227Z_fdia_consistent_attack_fdia118_binary,results.json,summary/H3/branch,,yes,H3 PHYSICS (tree-surrogate arm survives)

@@ -12,16 +12,31 @@ Run:  python -m experiments.run_quantum --variant binary --qubits 8 --model qker
 from __future__ import annotations
 
 import argparse
-import json
+import os
+import sys
 
-import numpy as np
-import optuna
-from sklearn.metrics import f1_score
-from sklearn.multiclass import OneVsRestClassifier
-from sklearn.svm import SVC
+# --threads N pins the BLAS/OpenMP/joblib pools before numpy is imported (torch, lightning.qubit
+# and the SVM's BLAS read them at import). Absent, nothing changes: the libraries keep their
+# defaults, as every published run used.
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--threads", type=int, default=None)
+THREADS = _pre.parse_known_args(sys.argv[1:])[0].threads
+THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "LOKY_MAX_CPU_COUNT")
+if THREADS is not None:
+    for _var in THREAD_VARS:
+        os.environ[_var] = str(THREADS)
 
-from qgridbench.eval.metrics import compute_all
-from qgridbench.models.quantum.qkernel import (
+import json  # noqa: E402
+
+import numpy as np  # noqa: E402
+import optuna  # noqa: E402
+from sklearn.metrics import f1_score  # noqa: E402
+from sklearn.multiclass import OneVsRestClassifier  # noqa: E402
+from sklearn.svm import SVC  # noqa: E402
+
+from experiments.exports import Exports  # noqa: E402
+from qgridbench.eval.metrics import compute_all  # noqa: E402
+from qgridbench.models.quantum.qkernel import (  # noqa: E402
     cached_kernel,
     compute_states,
     fidelity_kernel,
@@ -30,16 +45,16 @@ from qgridbench.models.quantum.qkernel import (
     kernel_target_alignment,
     store_kernel,
 )
-from qgridbench.models.quantum.vqc import VQClassifier
-from qgridbench.protocol import aggregate_seeds, kernel_subset, prepare_regime
-from qgridbench.utils.run_tracking import (
+from qgridbench.models.quantum.vqc import VQClassifier  # noqa: E402
+from qgridbench.protocol import aggregate_seeds, kernel_subset, prepare_regime  # noqa: E402
+from qgridbench.utils.run_tracking import (  # noqa: E402
     REPO_ROOT,
     RunDir,
     get_logger,
     load_yaml,
     mlflow_log,
 )
-from qgridbench.utils.seeding import set_all_seeds
+from qgridbench.utils.seeding import set_all_seeds  # noqa: E402
 
 log = get_logger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -53,7 +68,9 @@ def _svc_on_kernel(n_classes, C):
     return OneVsRestClassifier(base) if n_classes > 2 else base
 
 
-def run_qkernel(reg, encoding, n_qubits, seeds, cfg_q, storage, tag, run: RunDir):
+def run_qkernel(
+    reg, encoding, n_qubits, seeds, cfg_q, storage, tag, run: RunDir, exports: Exports | None = None
+):
     """Tune bandwidth+C, evaluate on the full test split, cache final kernels.
 
     Tuning evaluates on a stratified val SUBSAMPLE (config tuning_val_subset) —
@@ -158,6 +175,12 @@ def run_qkernel(reg, encoding, n_qubits, seeds, cfg_q, storage, tag, run: RunDir
     proba_te = _svc_proba(clf, K_te, y_tr, n_classes)
     metrics = compute_all(y_te, proba_te)
     per_seed = [metrics for _ in seeds]
+    if exports is not None:  # records only; the deterministic fit is shared by every seed
+        fam = f"qsvm_{encoding}"
+        for s in seeds:
+            exports.predictions(s, "clean", fam, proba_te, y_te, np.arange(len(y_te)))
+            for k, v in metrics.items():
+                exports.metric(s, fam, "clean", k, v)
     agg = aggregate_seeds(per_seed)
     agg["train_time_s"] = {"mean": train_kernel_s + svc_fit_s, "std": 0.0}
     agg["infer_latency_s"] = {"mean": latency_per_sample, "std": 0.0}
@@ -223,7 +246,7 @@ def _svc_proba(clf, K, y_tr, n_classes):
 # ------------------------------ VQC ------------------------------------------
 
 
-def run_vqc(reg, n_qubits, seeds, cfg_q, storage, tag, run: RunDir):
+def run_vqc(reg, n_qubits, seeds, cfg_q, storage, tag, run: RunDir, exports: Exports | None = None):
     from qgridbench.models.classical.zoo import stratified_cap
 
     A_tr, y_tr = reg.angles["train"], reg.y["train"]
@@ -291,6 +314,12 @@ def run_vqc(reg, n_qubits, seeds, cfg_q, storage, tag, run: RunDir):
         latencies.append((_t.perf_counter() - t0) / len(A_te))
         fit_times.append(m.fit_seconds)
         per_seed.append(compute_all(y_te, proba))
+        if exports is not None:  # records only
+            exports.predictions(s, "clean", "vqc", proba, y_te, np.arange(len(y_te)))
+            for k, v in per_seed[-1].items():
+                exports.metric(s, "vqc", "clean", k, v)
+            exports.metric(s, "vqc", "clean", "train_time_s", fit_times[-1])
+            exports.metric(s, "vqc", "clean", "infer_latency_s", latencies[-1])
         grad_var_last.append(m.history["grad_norm_var"][-1] if m.history["grad_norm_var"] else 0.0)
     agg = aggregate_seeds(per_seed)
     agg["train_time_s"] = {
@@ -342,6 +371,12 @@ def main():
     ap.add_argument("--model", choices=["qkernel", "vqc"], default="qkernel")
     ap.add_argument("--encodings", nargs="*", default=None)
     ap.add_argument("--seeds", type=int, nargs="*", default=None)
+    ap.add_argument("--threads", type=int, default=None, help="pin BLAS/OpenMP thread pools")
+    ap.add_argument(
+        "--study-suffix",
+        default="",
+        help="appended to the run tag and study names: a fresh search when the regime changed",
+    )
     args = ap.parse_args()
 
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
@@ -352,22 +387,37 @@ def main():
 
     reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
     tag = f"{args.variant}_q{args.qubits}"
+    if args.study_suffix:
+        tag += f"_{args.study_suffix}"
 
     def storage_for(study: str) -> str:
         return f"sqlite:///{(storage_dir / f'optuna_{study}.db').as_posix()}"
 
     with RunDir(f"quantum_{args.model}_{tag}", config=vars(args), seeds=seeds) as run:
         out = {}
+        exports = Exports(args.variant, tuned_file=None)
+        exports.extra = {"threads": THREADS, "model": args.model, "qubits": args.qubits}
         if args.model == "qkernel":
+            exports.extra["studies"] = {f"qsvm_{e}": f"qk_{e}_{tag}" for e in encodings}
             for enc in encodings:
                 out[enc] = run_qkernel(
-                    reg, enc, args.qubits, seeds, cfg_q, storage_for(f"qk_{enc}_{tag}"), tag, run
+                    reg,
+                    enc,
+                    args.qubits,
+                    seeds,
+                    cfg_q,
+                    storage_for(f"qk_{enc}_{tag}"),
+                    tag,
+                    run,
+                    exports,
                 )
         else:
+            exports.extra["studies"] = {"vqc": f"vqc_{tag}"}
             out["vqc"] = run_vqc(
-                reg, args.qubits, seeds, cfg_q, storage_for(f"vqc_{tag}"), tag, run
+                reg, args.qubits, seeds, cfg_q, storage_for(f"vqc_{tag}"), tag, run, exports
             )
         run.write_json("results.json", out)
+        exports.write(run.path)
         run.metrics = {k: v["aggregate"]["macro_f1"]["mean"] for k, v in out.items()}
         print(json.dumps(run.metrics, indent=2))
         print(f"-> {run.path}")

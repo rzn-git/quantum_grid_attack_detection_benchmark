@@ -36,14 +36,19 @@ CONTROLS.
 
 Analysis only: no model is fit, no attack is crafted.
 
-Run:  python -m experiments.run_taxonomy_scope
+Run:  python -m experiments.run_taxonomy_scope [--p7b-run DIR] [--e13-run DIR] [--run-tag TAG]
+      (the two flags replace the archived p7b and E13 sources, e.g. with their runs at another
+      VQC configuration; every other source stays archived)
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 from collections import Counter
 
+from experiments.exports import Exports
+from experiments.tuned_file import run_name
 from qgridbench.eval.tables import _regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger
 
@@ -77,17 +82,31 @@ def load(run: str, key: str | None):
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--p7b-run", default=SOURCES["p7b"][0], help="p7b run dir (repo-relative)")
+    ap.add_argument("--e13-run", default=SOURCES["e13"][0], help="E13 run dir (repo-relative)")
+    ap.add_argument("--run-tag", default=None, help="suffix for the run directory name")
+    args = ap.parse_args()
+    sources = {
+        **SOURCES,
+        "p7b": (args.p7b_run, SOURCES["p7b"][1]),
+        "e13": (args.e13_run, SOURCES["e13"][1]),
+    }
     cfg = {
-        "sources": {k: v[0] for k, v in SOURCES.items()},
+        "sources": {k: v[0] for k, v in sources.items()},
         "rule_a": "qgridbench.eval.tables._regime (published, two-part)",
         "rule_b": "accuracy half alone (mass condition dropped)",
         "note": "analysis only — no model is fit and no attack is crafted",
     }
 
-    with RunDir("taxonomy_scope_binary_q8", config=cfg, seeds=[0]) as run:
+    with RunDir(run_name("taxonomy_scope_binary_q8", args.run_tag), config=cfg, seeds=[0]) as run:
         cells: list[dict] = []
+        ex = Exports("binary", None)
+        ex.extra["sources"] = cfg["sources"]
 
         def add(family, source, key, mass, f1):
+            ex.metric("archived", family, f"{source}|{key}", "mass_ratio", mass)
+            ex.metric("archived", family, f"{source}|{key}", "f1_minus_floor", f1)
             cells.append(
                 {
                     "family": family,
@@ -101,7 +120,7 @@ def main() -> None:
             )
 
         # P8a — classical RBF, bandwidth sweep, every radius
-        p8a = load(*SOURCES["p8a"])
+        p8a = load(*sources["p8a"])
         for w, v in p8a["per_width"].items():
             for eps, c in v["curve"].items():
                 if eps == "0.0":
@@ -109,7 +128,7 @@ def main() -> None:
                 add("rbf", "p8a", f"gamma_x{w}@{eps}", c["kernel_mass_ratio"], c["f1_minus_floor"])
 
         # p7b — three families under the loss objective, every radius
-        p7b = load(*SOURCES["p7b"])["per_model"]
+        p7b = load(*sources["p7b"])["per_model"]
         for m, v in p7b.items():
             radii = v.get("curve", v)
             for eps, c in radii.items():
@@ -118,7 +137,7 @@ def main() -> None:
                 add(m, "p7b", f"{m}@{eps}", c["kernel_mass_ratio"], c["f1_minus_floor"])
 
         # P11c part B — the fidelity kernel under MASS DESCENT, per regularization
-        for C, v in load(*SOURCES["p11c"])["part_b_regularization"].items():
+        for C, v in load(*sources["p11c"])["part_b_regularization"].items():
             add(
                 "qsvm",
                 "p11c_mass_descent",
@@ -128,7 +147,7 @@ def main() -> None:
             )
 
         # E13 — the VQC under both objectives, every radius
-        for eps, c in load(*SOURCES["e13"])["curve"].items():
+        for eps, c in load(*sources["e13"])["curve"].items():
             for obj in ("loss_objective", "mass_descent_objective"):
                 add(
                     "vqc",
@@ -139,7 +158,7 @@ def main() -> None:
                 )
 
         # E15 — the fidelity kernel across widths
-        for n, c in load(*SOURCES["e15"])["cells"].items():
+        for n, c in load(*sources["e15"])["cells"].items():
             for eps, x in c["curve"].items():
                 add("qsvm", "e15", f"q{n}@{eps}", x["mass_ratio"], x["f1_minus_floor"])
 
@@ -236,6 +255,7 @@ def main() -> None:
                 "disagrees -> the criterion itself needs revising"
             ),
         }
+        ex.write(run.path)
         run.write_json("results.json", verdict)
         run.metrics = {"n_disagreements": len(disagree), "n_cells": len(cells)}
         log.info(

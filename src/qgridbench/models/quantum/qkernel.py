@@ -36,6 +36,34 @@ KERNEL_CACHE = REPO_ROOT / "models" / "kernels"
 ENCODINGS = ("angle_ry", "zz")
 
 
+def feature_map(x, encoding: str, n_qubits: int, entangle_strength: float = 1.0, n_reps: int = 2):
+    """Apply one feature map's gates to the current circuit (call inside a QNode).
+
+    The single definition of the encodings: the fidelity kernel's statevector QNode below and
+    the variational classifier's encoding arms (R4-13) both call it. `x` holds the already
+    bandwidth-scaled angles, one row of shape (n,) or a broadcast batch of shape (B, n); features
+    are indexed on the last axis, so both shapes run the same gates.
+      - angle_ry: RY(x_i) on each wire
+      - zz:       n_reps repetitions of [H; RZ(2 x_i)] then the ring CNOT-RZ(2 s x_i x_j)-CNOT,
+                  s = entangle_strength (see `_circuit_state_fn` for s and n_reps)
+    """
+    if encoding == "angle_ry":
+        for i in range(n_qubits):
+            qml.RY(x[..., i], wires=i)
+    elif encoding == "zz":
+        for _ in range(n_reps):
+            for i in range(n_qubits):
+                qml.Hadamard(wires=i)
+                qml.RZ(2.0 * x[..., i], wires=i)
+            for i in range(n_qubits):  # ring entanglement
+                j = (i + 1) % n_qubits
+                qml.CNOT(wires=[i, j])
+                qml.RZ(2.0 * entangle_strength * x[..., i] * x[..., j], wires=j)
+                qml.CNOT(wires=[i, j])
+    else:
+        raise ValueError(f"unknown encoding '{encoding}'")
+
+
 def _circuit_state_fn(
     encoding: str, n_qubits: int, entangle_strength: float = 1.0, n_reps: int = 2
 ):
@@ -54,33 +82,15 @@ def _circuit_state_fn(
     RY cannot show this — RY(t)RY(t) = RY(2t) merely doubles the bandwidth — so the H between
     the RZs is what the extra repetition buys (P17c).
     """
+    if encoding not in ENCODINGS:
+        raise ValueError(f"unknown encoding '{encoding}'")
     dev = qml.device("lightning.qubit", wires=n_qubits)
 
-    if encoding == "angle_ry":
+    @qml.qnode(dev)
+    def state_fn(x):
+        feature_map(x, encoding, n_qubits, entangle_strength, n_reps)
+        return qml.state()
 
-        @qml.qnode(dev)
-        def state_fn(x):
-            for i in range(n_qubits):
-                qml.RY(x[i], wires=i)
-            return qml.state()
-
-    elif encoding == "zz":
-
-        @qml.qnode(dev)
-        def state_fn(x):
-            for _ in range(n_reps):
-                for i in range(n_qubits):
-                    qml.Hadamard(wires=i)
-                    qml.RZ(2.0 * x[i], wires=i)
-                for i in range(n_qubits):  # ring entanglement
-                    j = (i + 1) % n_qubits
-                    qml.CNOT(wires=[i, j])
-                    qml.RZ(2.0 * entangle_strength * x[i] * x[j], wires=j)
-                    qml.CNOT(wires=[i, j])
-            return qml.state()
-
-    else:
-        raise ValueError(f"unknown encoding '{encoding}'")
     return state_fn
 
 

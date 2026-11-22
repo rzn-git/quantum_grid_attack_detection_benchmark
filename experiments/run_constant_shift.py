@@ -34,7 +34,7 @@ what singles out the VQC and the encoding account is wrong. If the VQC's constan
 within noise of its matched-norm random damage, the direction does not matter and the account is
 also wrong.
 
-Run:  python -m experiments.run_constant_shift
+Run:  python -m experiments.run_constant_shift [--best-params FILE] [--run-tag TAG]
 
 Graduated from tmp/ because the appendix reports its numbers: the class-prior account is
 rejected on its evidence (Spearman 0.107, p = 0.82; the global component moves the VQC by
@@ -45,12 +45,14 @@ so already-recorded results still resolve.
 
 from __future__ import annotations
 
-import json
+import argparse
 
 import numpy as np
 
+from experiments.exports import Exports
 from experiments.run_adversarial import CLASSICAL, FittedZoo
 from experiments.run_review_claims import floors, macro_f1
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.attacks.evasion import pgd
 from qgridbench.models.classical.zoo import stratified_cap
 from qgridbench.protocol import prepare_regime
@@ -65,9 +67,12 @@ ENCODING = "zz"
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_tuned_file_args(ap)
+    args = ap.parse_args()
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
-    best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best = load_tuned_file(args.best_params, "binary", 8)
 
     reg = prepare_regime("binary", "pca", n_components=8, seed=0)
     scale = reg.feature_scale
@@ -76,10 +81,15 @@ def main():
     fl = floors(reg.y["train"], yte)["stratified_random"]
     families = CLASSICAL + ["qsvm", "vqc"]
 
-    with RunDir("probe_constant_shift_binary_q8", config={"eps": EPS}, seeds=SEEDS) as run:
+    with RunDir(
+        run_name("probe_constant_shift_binary_q8", args.run_tag),
+        config={"eps": EPS, "best_params": bp_rel},
+        seeds=SEEDS,
+    ) as run:
         per_seed = []
+        ex = Exports("binary", bp_rel)
         for s in SEEDS:
-            rng = spawn_rng(s, "adv")
+            rng = spawn_rng(s, ex.stream("adv"))
             zoo = FittedZoo(reg, ENCODING, 8, s, cfg_q["qkernel"]["subset_cap"], best)
 
             # the full per-point attack from the BROKEN surrogate (the published one)
@@ -115,10 +125,9 @@ def main():
                 "perpoint_random": Xte + EPS * scale * pp,
                 "pgd_broken": Xpgd,
             }
-            f1 = {
-                k: {f: macro_f1(yte, zoo.predict_proba(f, X)) for f in families}
-                for k, X in sets.items()
-            }
+            src = {k: "mlp" for k in ("constant_prior", "perpoint_residual", "pgd_broken")}
+            src |= {"constant_random": "random", "perpoint_random": "random"}
+            f1 = ex.score(s, sets, families, zoo.predict_proba, yte, ev, macro_f1, src)
             per_seed.append(f1)
             run.write_json("results_partial.json", {"per_seed": per_seed})
             log.info(
@@ -150,6 +159,7 @@ def main():
                 "constant_share_of_full": dp / dfull if dfull > 1e-9 else float("nan"),
                 "prior_over_random_constant": dp / dr if abs(dr) > 1e-9 else float("nan"),
             }
+        ex.write(run.path)
         run.write_json("results.json", {"per_seed": per_seed, "summary": summary, "floor": fl})
         print(
             f"\n{'family':<9}{'clean-fl':>9}{'const-prior':>12}{'const-rand':>11}"

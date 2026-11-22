@@ -59,6 +59,17 @@ def git_describe() -> str:
     return f"{sha}-dirty" if dirty else sha
 
 
+def git_dirty_paths() -> str:
+    """`git status --porcelain`: the paths that differ from HEAD; empty on a clean tree."""
+    return subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
 def lock_hash() -> str:
     """SHA256 of requirements.lock.txt — pins the environment a run executed in."""
     lock = REPO_ROOT / "requirements.lock.txt"
@@ -80,6 +91,9 @@ def compute_env() -> dict[str, Any]:
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
         "mkl_num_threads": os.environ.get("MKL_NUM_THREADS"),
         "openblas_num_threads": os.environ.get("OPENBLAS_NUM_THREADS"),
+        # the VQC statevector batch override (vqc.resolve_chunk); results do not depend on
+        # it, peak memory does, so a run that sets it says so
+        "qgb_vqc_chunk": os.environ.get("QGB_VQC_CHUNK"),
         "platform": platform.platform(),
         "python": platform.python_version(),
     }
@@ -114,6 +128,10 @@ class RunDir:
             yaml.safe_dump({"config": self.config, "seeds": self.seeds}, sort_keys=False)
         )
         (self.path / "git_sha.txt").write_text(git_describe() + "\n")
+        dirty = git_dirty_paths()
+        if dirty.strip():
+            # a run from a dirty tree says which paths differed from its sha
+            (self.path / "git_dirty_paths.txt").write_text(dirty)
         (self.path / "lock_hash.txt").write_text(lock_hash() + "\n")
         (self.path / "compute_env.json").write_text(json.dumps(compute_env(), indent=2))
         self._t0 = time.perf_counter()

@@ -62,15 +62,23 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "results" / "runs"
-RUN_ID = re.compile(r"20\d{6}T\d{6}Z_[A-Za-z0-9_]+")
+# A stamp inside a longer file name (`redteam_review_20261120T012258Z_clauses.csv`) is a
+# stamped report, not a run id: an id starts at a word boundary.
+RUN_ID = re.compile(r"(?<![A-Za-z0-9_])20\d{6}T\d{6}Z_[A-Za-z0-9_]+")
 TRUNCATED = re.compile(r"20\d{6}T\d{6}Z_?[A-Za-z0-9_]*\.\.\.")
 BARE = re.compile(r"20\d{6}T\d{6}Z(?![_A-Za-z0-9])")
 
 # The decision log is append-only, so line numbers of existing content never move. Everything at or
 # below this line predates RULE 4 and is grandfathered; everything appended after it is enforced.
-LOG_GRANDFATHER_LINE = 10834
+# Re-based 2026-11-20 (it was 10834): this file is a pre-release check and did not run
+# between 2026-08-23 and 2026-11-20, and 133 bare stamps on 90 lines entered entries that cannot be
+# edited. Line 22783 is the last line of the 2026-11-20T09:43Z entry; every later entry is
+# enforced. Run this file at any close-out that appends to the log.
+LOG_GRANDFATHER_LINE = 22783
 
 # Files a runner writes for every run regardless of outcome. Anything else is a payload.
 BOILERPLATE = {
@@ -99,16 +107,71 @@ DOCUMENTED_DANGLING = {
     "20260822T090450Z_group_blackbox_control_binary_q8": (
         "20260822T084835Z_group_blackbox_control_binary_q8"
     ),
+    # names cut short in the 2026-11-18 entry at log line 20201 (added 2026-11-20)
+    "20260822T173155Z_score_based_blackbox": "20260822T173155Z_score_based_blackbox_binary_q8",
+    "20260822T091556Z_group_surrogate_control": (
+        "20260822T091556Z_group_surrogate_control_binary_q8"
+    ),
 }
 
 # Dead runs cited as the artifact behind a finding, where the citing entry is immutable.
 # Value = the run that actually holds the numbers. Same shape of defect as the N1 citation.
 DOCUMENTED_DEAD_CITED = {
     "20260822T075536Z_poisoning_seeds_binary_q8": "20260822T082913Z_poisoning_seeds_binary_q8",
+    # status lines of jobs then running (log lines 19218 and 19219, 2026-11-17); both were
+    # killed and are labelled so in experiments/run_labels.csv (added 2026-11-20)
+    "20261117T033245Z_noise_defense_strength_binary_q8": (
+        "20261119T044915Z_noise_defense_strength_binary_q8"
+    ),
+    "20261117T033121Z_multiclass_confusion_anchor_triple": (
+        "20261117T033636Z_multiclass_confusion_anchor_triple"
+    ),
+    # the status line of a job then running (the incident entry of 2026-11-21T19:34Z); the job
+    # was stopped at 20:26Z, is labelled killed in experiments/run_labels.csv, and was rerun
+    # with the bounded step search (added 2026-11-21)
+    "20261121T181738Z_probe_hsj_restarts_gas_binary_slog_q8": (
+        "20261121T204053Z_probe_hsj_restarts_gas_binary_slog_q8_bounded_qsvm"
+    ),
 }
 
 # Truncated citations that predate RULE 3. Both are also corrected in the 21:26Z entry.
-DOCUMENTED_TRUNCATED = {"20260822T081917Z...", "20260822T080113Z..."}
+# Added 2026-11-20, each in an immutable log entry: `20261116T171142Z_...` is
+# 20261116T171142Z_tree_surrogate_transfer_binary_q8_pca_smoke (line 18794),
+# `20261119T013227Z_...` is 20261119T013227Z_fdia_consistent_attack_fdia118_binary (21283),
+# `20261119T084254Z_...` is
+# 20261119T084254Z_surrogate_family_transfer_binary_q8_consistent_smoke (21683),
+# `20261118T154054Z_...` is 20261118T154054Z_adversarial_augmentation_binary_q8_vqc_table1_t6
+# (22215), `20261120T004935Z_...` is 20261120T004935Z_probe_kernel_cap_cost_binary (22352).
+DOCUMENTED_TRUNCATED = {
+    "20260822T081917Z...",
+    "20260822T080113Z...",
+    "20261116T171142Z_...",
+    "20261119T013227Z_...",
+    "20261119T084254Z_...",
+    "20261118T154054Z_...",
+    "20261120T004935Z_...",
+    # two interim readings of 2026-11-21 (04:44Z, 05:20Z); the full id,
+    # 20261120T082045Z_probe_hsj_restarts_binary_q8_repro, is in the CORRECTION entry of that day
+    "20261120T082045Z_...",
+}
+
+# Bare stamps in files that are records and are not edited after the fact (a reviewer's
+# report, an entry of the append-only decision log). stamp -> the run meant (the comment says
+# which record carries it). A new bare stamp still fails.
+DOCUMENTED_BARE = {
+    # a reviewer's report of 2026-11-20
+    "20260822T175718Z": ("20260822T175718Z_score_based_blackbox_binary_q8"),
+    # the registration of the regularization sweep (2026-11-20T12:16Z) names P9a by its stamp
+    "20260814T180008Z": ("20260814T180008Z_whitebox_qsvm_binary_q8"),
+    # two entries of 2026-11-21 (the READING of 04:19Z, the FINDING of 05:43Z); both full ids
+    # are in the CORRECTION entry of that day
+    "20260820T182834Z": ("20260820T182834Z_whole_file_retune_binary"),
+    "20261121T043444Z": ("20261121T043444Z_probe_hsj_restarts_binary_q8_supplied_start"),
+    # the entry of 2026-11-22T16:47Z (the query sweep's two middle-budget restarts); both full
+    # ids are in the CORRECTION entry of 16:50Z
+    "20261122T131033Z": ("20261122T131033Z_probe_hsj_restarts_binary_q8_sweep_mid"),
+    "20261122T121232Z": ("20261122T121232Z_probe_hsj_restarts_binary_q8_sweep_mid"),
+}
 
 # Words that admit, next to the pointer, that the run produced nothing.
 DEAD_RUN_WORDS = (
@@ -130,6 +193,8 @@ DEAD_RUN_WORDS = (
     "stopped",
     "aborted",
     "partial",
+    "void",
+    "wrote no",
 )
 
 
@@ -167,8 +232,20 @@ def _cited(path: Path) -> list[tuple[int, str, str]]:
     return out
 
 
+# The research run archive is not part of the public release. A clone that ran only the
+# quickstart holds its own preprocess and smoke runs and none of the cited ones, so an empty
+# or missing folder is not the test of its absence: one early run every exhibit depends on is.
+ARCHIVE_SENTINEL = "20260813T081418Z_classical_binary_full"
+
+
+def _archive_present() -> bool:
+    return (RUNS / ARCHIVE_SENTINEL).is_dir()
+
+
 def _skip() -> bool:
-    return not RUNS.exists() or not _on_disk()
+    if not _archive_present():
+        pytest.skip("the research run archive (results/runs) is not on this machine")
+    return False
 
 
 def test_every_cited_run_id_resolves():
@@ -248,6 +325,8 @@ def test_no_run_is_cited_by_a_bare_timestamp():
                 hits = [d for d in on_disk if d.startswith(m.group(0))]
                 if len(hits) != 1:
                     continue  # zero or several matches: a moment, or ambiguous — not a citation
+                if m.group(0) in DOCUMENTED_BARE:
+                    continue
                 failures.append(
                     f"{path.relative_to(ROOT)}:{i + 1} cites {m.group(0)} bare; write it in full "
                     f"as {hits[0]}"
@@ -258,7 +337,7 @@ def test_no_run_is_cited_by_a_bare_timestamp():
 
 def test_the_linter_would_actually_catch_the_defects_it_was_built_for():
     """Positive control — a linter that silently matched nothing would read as coverage."""
-    on_disk = _on_disk() if RUNS.exists() else set()
+    on_disk = _on_disk() if _archive_present() else set()
 
     fake = "20260101T000000Z_this_run_never_existed"
     assert fake not in on_disk
@@ -270,6 +349,12 @@ def test_the_linter_would_actually_catch_the_defects_it_was_built_for():
     )
     assert not BARE.search("20260822T184418Z_taxonomy_scope_binary_q8"), (
         "RULE 4 matches full run ids; it would flag every correct citation"
+    )
+    assert not RUN_ID.search("reports/redteam_review_20261120T012258Z_clauses.csv"), (
+        "the id pattern reads a stamped report file as a run id"
+    )
+    assert RUN_ID.search("results/runs/20260822T184418Z_taxonomy_scope_binary_q8/"), (
+        "the id pattern no longer matches a run id inside a path"
     )
 
     # the correction shape must stay exempt: wrong id and right id on one line
@@ -287,6 +372,8 @@ def test_the_linter_would_actually_catch_the_defects_it_was_built_for():
         for dead, live in DOCUMENTED_DEAD_CITED.items():
             assert not _has_payload(dead), f"{dead} has a payload now; drop the exemption"
             assert _has_payload(live), f"{dead} is excused by {live}, which has no payload either"
+        for stamp, run in DOCUMENTED_BARE.items():
+            assert run in on_disk and run.startswith(stamp), f"{stamp} is excused by {run}"
 
 
 def test_paper_sources_carry_no_mangled_escapes():
@@ -301,6 +388,8 @@ def test_paper_sources_carry_no_mangled_escapes():
     import re as _re
 
     paper = Path(__file__).resolve().parents[1] / "paper"
+    if not paper.is_dir():
+        pytest.skip("the paper sources are not part of the public release")
     sources = sorted(paper.glob("sections/*.tex")) + [
         p for p in (paper / "main.tex", paper / "arxiv" / "main.tex") if p.exists()
     ]

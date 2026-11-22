@@ -1,0 +1,324 @@
+# Curated rows of the arXiv appendix table "Further controls" (experiments/build_further_controls.py
+# reads every value from its run artifact and fails loud on a missing run, file or key).
+#
+# A row: `check` (what was asked, with the scope a reader needs: attack, sample, seeds), `reading`
+# (LaTeX; <0>, <1>, ... are replaced by the formatted values), `bears_on` (the body section the
+# reading scopes), `values` and optional `require` (keys that must be true, or the build fails).
+# A value: run, file, key, fmt, expect.
+#   key     a "/"-separated JSON path (list indices as integers; a difference of two paths as
+#           "a - b"). A "*" step iterates a list or dict and needs one of:
+#             agg: min | max | one   ("one" fails unless exactly one entry is left)
+#             pick_by: <path>        (the entry with the largest value at <path>, read at the key)
+#           `where` / `where_not` keep the list entries whose fields match; `keys` names the
+#           entries of a dict to iterate (a missing one fails).
+#   fmt     a Python format spec; "count" for an integer with IEEE thousands spacing; a spec ending
+#           in "%" prints a percentage.
+#   sign    negative | positive: the wording assumes this sign ("loses 0.065"); the build checks
+#           it and prints the magnitude.
+#   expect  the text the value must print as. The build fails when the artifact disagrees, so a
+#           wrong key or a changed run cannot put a different number in the table unseen.
+# Group meanings are the color language (qgridbench.eval.design_tokens.MEANING).
+# Sources: coverage audit 2026-11-19 (reports/coverage_audit_20261119/, with its review), decision
+# log entries named per row.
+
+- group: Split protocol and accuracy
+  meaning: choice
+  rows:
+    - id: E1
+      check: Do duplicated rows carry conflicting labels?
+      reading: >-
+        Among <0> pooled rows the number that duplicate another row's features is <1>, so no
+        duplicate carries a conflicting label. Of the test rows with a training neighbor closer
+        than 0.1, <2> have one of the opposite label
+      bears_on: Section~\ref{sec:rq1}; the null is not row-level label ambiguity
+      values:
+        - {run: 20260813T061821Z_preprocess, file: preprocess_summary.json, key: binary/rows, fmt: count, expect: "78368"}
+        - {run: 20260822T074041Z_label_ambiguity_binary, file: results.json, key: duplicate_conflict/n_duplicate_rows, fmt: count, expect: "0"}
+        - {run: 20260822T074041Z_label_ambiguity_binary, file: results.json, key: row_level_nn/delta_nn, fmt: ".1%", expect: "0.4%"}
+    - id: CC2
+      check: >-
+        The projection and cap costs with the hyperparameters held fixed (LightGBM, 16 components,
+        one seed)
+      reading: >-
+        Under the set tuned at PCA-8, PCA costs <0> and the cap <1>; under the full-feature set,
+        <2> and <3>. On all features, changing from the full-feature set to the PCA-8 set costs <4>
+      bears_on: Section~\ref{sec:rq1} and Fig.~\ref{fig:bridge}
+      values:
+        - {run: 20261120T005230Z_probe_kernel_cap_cost_binary, file: results.json, key: "fixed_hyperparameters/matched_regime/lgbm/all_features - fixed_hyperparameters/matched_regime/lgbm/pca16/full_train", fmt: ".3f", expect: "0.063"}
+        - {run: 20261120T005230Z_probe_kernel_cap_cost_binary, file: results.json, key: "fixed_hyperparameters/matched_regime/lgbm/pca16/full_train - fixed_hyperparameters/matched_regime/lgbm/pca16/capped", fmt: ".3f", expect: "0.197"}
+        - {run: 20261120T005230Z_probe_kernel_cap_cost_binary, file: results.json, key: "fixed_hyperparameters/full_features/lgbm/all_features - fixed_hyperparameters/full_features/lgbm/pca16/full_train", fmt: ".3f", expect: "0.051"}
+        - {run: 20261120T005230Z_probe_kernel_cap_cost_binary, file: results.json, key: "fixed_hyperparameters/full_features/lgbm/pca16/full_train - fixed_hyperparameters/full_features/lgbm/pca16/capped", fmt: ".3f", expect: "0.257"}
+        - {run: 20261120T005230Z_probe_kernel_cap_cost_binary, file: results.json, key: "fixed_hyperparameters/full_features/lgbm/all_features - fixed_hyperparameters/matched_regime/lgbm/all_features", fmt: ".3f", expect: "0.042"}
+    - id: TD
+      check: >-
+        The classical lead over ten draws of the 2000 training rows per dimensionality (the
+        published draw and nine more; three model seeds, tuned parameters unchanged)
+      reading: >-
+        XGBoost minus the best quantum kernel: $<0> \pm <1>$, $<2> \pm <3>$, and $<4> \pm <5>$
+        macro-F1 at 8, 12, and 16 dimensions (lowest <6>, highest <7>); positive on <8>, <9>,
+        and <10> of ten draws
+      bears_on: Section~\ref{sec:rq1}; the margin is not an artifact of one training draw
+      values:
+        - {run: 20261122T114653Z_training_draws_binary_pca8, file: results.json, key: registered/mean, fmt: ".3f", expect: "0.030"}
+        - {run: 20261122T114653Z_training_draws_binary_pca8, file: results.json, key: registered/std, fmt: ".3f", expect: "0.005"}
+        - {run: 20261122T131923Z_training_draws_binary_pca12, file: results.json, key: registered/mean, fmt: ".3f", expect: "0.040"}
+        - {run: 20261122T131923Z_training_draws_binary_pca12, file: results.json, key: registered/std, fmt: ".3f", expect: "0.008"}
+        - {run: 20261122T133158Z_training_draws_binary_pca16, file: results.json, key: registered/mean, fmt: ".3f", expect: "0.037"}
+        - {run: 20261122T133158Z_training_draws_binary_pca16, file: results.json, key: registered/std, fmt: ".3f", expect: "0.007"}
+        - {run: 20261122T114653Z_training_draws_binary_pca8, file: results.json, key: registered/min, fmt: ".3f", expect: "0.023"}
+        - {run: 20261122T131923Z_training_draws_binary_pca12, file: results.json, key: registered/max, fmt: ".3f", expect: "0.055"}
+        - {run: 20261122T114653Z_training_draws_binary_pca8, file: results.json, key: registered/n_positive, fmt: "count", expect: "10"}
+        - {run: 20261122T131923Z_training_draws_binary_pca12, file: results.json, key: registered/n_positive, fmt: "count", expect: "10"}
+        - {run: 20261122T133158Z_training_draws_binary_pca16, file: results.json, key: registered/n_positive, fmt: "count", expect: "10"}
+    - id: X1
+      check: The classical margin over the stratified-random floor, resampling files
+      reading: >-
+        Deleting one file at a time gives the interval $[<0>, <1>]$ (one seed), wider than the
+        interval over partitions, which share files
+      bears_on: Section~\ref{sec:split}, matched contest
+      values:
+        - {run: 20260822T170254Z_file_level_bootstrap_binary, file: results.json, key: per_seed/seed0/classical_minus_floor/file_jackknife/ci_lo, fmt: ".3f", expect: "0.020"}
+        - {run: 20260822T170254Z_file_level_bootstrap_binary, file: results.json, key: per_seed/seed0/classical_minus_floor/file_jackknife/ci_hi, fmt: ".3f", expect: "0.044"}
+    - id: P27c
+      check: Both matched models retuned on held-out files
+      reading: >-
+        The classical minus quantum contrast is $<0> \pm <1>$ over five partitions; retuning
+        moved it by <2>
+      bears_on: Section~\ref{sec:split}; the contrast is not stale tuning
+      values:
+        - {run: 20260901T014935Z_whole_file_matched_retune_binary_q8, file: results.json, key: summary/retuned_contrast_mean, fmt: "+.3f", expect: "+0.016"}
+        - {run: 20260901T014935Z_whole_file_matched_retune_binary_q8, file: results.json, key: summary/retuned_contrast_std, fmt: ".3f", expect: "0.017"}
+        - {run: 20260901T014935Z_whole_file_matched_retune_binary_q8, file: results.json, key: summary/contrast_shift, fmt: "+.4f", expect: "+0.0009"}
+    - id: N-TEMP
+      check: A time-ordered split inside each scenario block (first 60\% of rows train, last 20\% test)
+      reading: >-
+        LightGBM scores <0>, against <1> with whole files held out, so time order alone removes
+        almost all of the leak
+      bears_on: Section~\ref{sec:split}
+      values:
+        - {run: 20260902T022541Z_temporal_split_binary, file: results.json, key: verdict/temporal_ordered, fmt: ".3f", expect: "0.601"}
+        - {run: 20260816T023620Z_group_split_control_binary, file: results.json, key: verdict/level_group_mean, fmt: ".3f", expect: "0.594"}
+    - id: R4-19
+      check: Is a released file one event?
+      reading: >-
+        No. Each file holds one unbroken run of each of its scenarios (<0> runs in 15 files),
+        and <1> of rows have their nearest neighbor in the same file
+      bears_on: Section~\ref{sec:data}
+      require:
+        - {run: 20261116T114059Z_file_event_identity_multiclass, file: results.json, key: verdict/distinct_session_lines/no_scenario_split}
+      values:
+        - {run: 20261116T114059Z_file_event_identity_multiclass, file: results.json, key: n_file_scenario_runs, fmt: count, expect: "553"}
+        - {run: 20261116T114059Z_file_event_identity_multiclass, file: results.json, key: files_as_groups/same_group_nn_fraction, fmt: ".0%", expect: "86%"}
+    - id: E9
+      check: A projected quantum kernel, tuned at the same budget
+      reading: >-
+        <0> macro-F1 at the bandwidth validation selects (<1> at the best of three on the test
+        split), against <2> for the fidelity kernel and <3> for tuned XGBoost
+      bears_on: Section~\ref{sec:rq1}; the null covers both kernel constructions
+      values:
+        - {run: 20260822T080846Z_projected_kernel_binary_q8, file: results.json, key: "projected/*/test_macro_f1", pick_by: val_macro_f1, fmt: ".3f", expect: "0.559"}
+        - {run: 20260822T080846Z_projected_kernel_binary_q8, file: results.json, key: verdict/best_test_macro_f1, fmt: ".3f", expect: "0.571"}
+        - {run: 20260822T080846Z_projected_kernel_binary_q8, file: results.json, key: fidelity_anchor/test_f1, fmt: ".3f", expect: "0.564"}
+        - {run: 20260813T064540Z_classical_binary_pca8, file: results.json, key: xgb/aggregate/macro_f1/mean, fmt: ".3f", expect: "0.597"}
+    - id: R4-05
+      check: How similar is the deployed quantum Gram matrix to the tuned RBF Gram matrix?
+      reading: >-
+        Their centered kernel alignment is <0>
+      bears_on: Section~\ref{sec:rq1}
+      values:
+        - {run: 20261116T114214Z_kernel_cka_binary_q8, file: results.json, key: per_bandwidth/0.7932271972166012/cka_tuned_rbf, fmt: ".2f", expect: "0.36"}
+    - id: X2
+      check: Which features carry the signal that survives on held-out files?
+      reading: >-
+        On held-out files, dropping the 48 voltage phasors costs XGBoost <0> of its <1> margin
+        over the stratified-random floor. Those 48 alone give <2>, and 48 random features <3>
+      bears_on: Section~\ref{sec:levers}; the signal is spread over many channels
+      values:
+        - {run: 20260822T173616Z_feature_block_ablation_binary, file: results.json, key: verdict/summary/xgb/per_block/voltage_phasor/drop, fmt: ".3f", expect: "0.039"}
+        - {run: 20260822T173616Z_feature_block_ablation_binary, file: results.json, key: verdict/summary/xgb/full_excess, fmt: ".3f", expect: "0.069"}
+        - {run: 20260822T173616Z_feature_block_ablation_binary, file: results.json, key: verdict/summary/xgb/per_block/voltage_phasor/block_only_excess, fmt: ".3f", expect: "0.053"}
+        - {run: 20260822T173616Z_feature_block_ablation_binary, file: results.json, key: verdict/summary/xgb/random_controls/random48, fmt: ".3f", expect: "0.059"}
+    - id: D1b
+      check: One to nine training files at a fixed budget of 2000 rows, by learner
+      reading: >-
+        XGBoost gains <0> macro-F1 and the MLP loses <1>, as each file then contributes fewer
+        rows
+      bears_on: Section~\ref{sec:levers}; the file-count reading is for the tree model
+      values:
+        - {run: 20260823T201540Z_file_diversity_curve_binary, file: results.json, key: diversity_gain_by_model/xgb, fmt: ".3f", sign: positive, expect: "0.015"}
+        - {run: 20260823T201540Z_file_diversity_curve_binary, file: results.json, key: diversity_gain_by_model/mlp, fmt: ".3f", sign: negative, expect: "0.065"}
+
+- group: Attack protocol
+  meaning: attack
+  rows:
+    - id: E2
+      check: >-
+        The worst case over ten restarts instead of their mean (transferred attack, RY-angle
+        QSVM, one model seed, 500 test rows)
+      reading: >-
+        Retention falls from <0> to <1> for the RY-angle QSVM and from <2> to <3> for LightGBM
+      bears_on: Section~\ref{sec:rq2}; a mean over restarts is not the worst case
+      values:
+        - {run: 20260822T081217Z_evasion_max_agg_binary_q8, file: results.json, key: per_family/qsvm/mean_retention, fmt: ".3f", expect: "0.513"}
+        - {run: 20260822T081217Z_evasion_max_agg_binary_q8, file: results.json, key: per_family/qsvm/worstcase_retention, fmt: ".3f", expect: "0.246"}
+        - {run: 20260822T081217Z_evasion_max_agg_binary_q8, file: results.json, key: per_family/lgbm/mean_retention, fmt: ".3f", expect: "0.583"}
+        - {run: 20260822T081217Z_evasion_max_agg_binary_q8, file: results.json, key: per_family/lgbm/worstcase_retention, fmt: ".3f", expect: "0.402"}
+    - id: E4b
+      check: >-
+        The QSVM's white-box result at $0.5\sigma$ across the regularization, and with sampled
+        circuits (three attack seeds)
+      reading: >-
+        White-box retention is <0> at $C = 1$ and <1> at the tuned $C$. Trained and read at 1024
+        shots, the deployed model's clean macro-F1 falls from <2> to <3> (standard deviation
+        <4> over three sampling draws)
+      bears_on: Sections~\ref{sec:rq2} and~\ref{sec:rq3}
+      values:
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=1|shots=exact|train_sampled=False/retention", fmt: ".3f", expect: "0.138"}
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=835.243|shots=exact|train_sampled=False/retention", fmt: ".3f", expect: "0.069"}
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=835.243|shots=exact|train_sampled=False/clean_f1", fmt: ".3f", expect: "0.563"}
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=835.243|shots=1024|train_sampled=True/clean_f1", fmt: ".3f", expect: "0.505"}
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=835.243|shots=1024|train_sampled=True/clean_f1_std", fmt: ".3f", expect: "0.030"}
+    - id: N3
+      check: >-
+        The radius at which damage is read (PGD curves of the first full robustness run, whose VQC
+        predates its final configuration)
+      reading: >-
+        It moves tree numbers by up to <0> under the score-based attack, where damage is not
+        monotone in the radius, and no family's by more than <1> under the shared-protocol PGD.
+        The kernel machines' own white-box attacks move far more
+        (Section~\ref{sec:rq2})
+      bears_on: Section~\ref{sec:rq2}
+      values:
+        - {run: 20260822T184645Z_damage_peak_radius_binary_q8, file: results.json, key: "detail/nes/*/loss_from_reporting_largest", agg: max, keys: [rf, xgb, lgbm], fmt: ".3f", expect: "0.107"}
+        - {run: 20260822T184645Z_damage_peak_radius_binary_q8, file: results.json, key: max_understatement, fmt: ".3f", expect: "0.007"}
+    - id: V2-E2
+      check: The Square search against LightGBM at $0.5\sigma$
+      reading: >-
+        It does <0> macro-F1 of damage, <1> more than natural evolution strategies at the same
+        budget
+      bears_on: Section~\ref{sec:rq2}; tree retentions are upper bounds
+      values:
+        - {run: 20260901T105256Z_square_blackbox_binary_q8, file: results.json, key: verdict/damage/lgbm/square_damage, fmt: ".3f", expect: "0.481"}
+        - {run: 20260901T105256Z_square_blackbox_binary_q8, file: results.json, key: verdict/square_minus_nes/lgbm, fmt: ".3f", expect: "0.081"}
+    - id: E-M2
+      check: White-box attack at $0.5\sigma$ with whole files held out (MLP, all 128 features)
+      reading: >-
+        Retention is <0> (attacked macro-F1 <1>), so the MLP's white-box fragility holds
+        without the leak
+      bears_on: Sections~\ref{sec:preempt} and~\ref{sec:limitations}
+      values:
+        - {run: 20261116T053127Z_whole_file_robustness_binary_full, file: results.json, key: aggregate/whole_file/families/mlp/wb_retention/mean, fmt: ".3f", expect: "0.303"}
+        - {run: 20261116T053127Z_whole_file_robustness_binary_full, file: results.json, key: aggregate/whole_file/families/mlp/wb_f1/mean, fmt: ".3f", expect: "0.174"}
+    - id: R4-03
+      check: >-
+        What an attacked kernel detector still catches (its own white-box attack at $0.5\sigma$,
+        200 test rows)
+      reading: >-
+        The deployed fidelity kernel catches <1> of attacks (<0> clean) while flagging <2> of
+        normal rows. The tuned RBF kernel catches <3> and flags <4>
+      bears_on: Section~\ref{sec:rq2}
+      values:
+        - {run: 20261116T113150Z_length_scale_per_class_binary_q8, file: results.json, key: "summary/cells/*/clean_attack_recall", agg: one, where: {axis: fidelity, value: 0.7932271972166012}, fmt: ".2f", expect: "0.71"}
+        - {run: 20261116T113150Z_length_scale_per_class_binary_q8, file: results.json, key: "summary/cells/*/eps0.5_attack_recall", agg: one, where: {axis: fidelity, value: 0.7932271972166012}, fmt: ".2f", expect: "0.05"}
+        - {run: 20261116T113150Z_length_scale_per_class_binary_q8, file: results.json, key: "summary/cells/*/eps0.5_false_alarm", agg: one, where: {axis: fidelity, value: 0.7932271972166012}, fmt: ".0%", expect: "98%"}
+        - {run: 20261116T113150Z_length_scale_per_class_binary_q8, file: results.json, key: "summary/cells/*/eps0.5_attack_recall", agg: one, where: {axis: rbf, value: 1.0}, fmt: ".2f", expect: "0.85"}
+        - {run: 20261116T113150Z_length_scale_per_class_binary_q8, file: results.json, key: "summary/cells/*/eps0.5_false_alarm", agg: one, where: {axis: rbf, value: 1.0}, fmt: ".0%", expect: "97%"}
+
+- group: Physical consistency on the MSU/ORNL data
+  meaning: control
+  rows:
+    - id: R4-02
+      check: Does the transfer to the trees depend on which channels the attacker moves?
+      reading: >-
+        Moving only the 56 channels the attacker controls directly, with the derived channels
+        frozen, keeps <0> to <1> of the full excess damage on the three tree models, so it does
+        not
+      bears_on: Section~\ref{sec:physics}
+      values:
+        - {run: 20261116T120015Z_deadband_channel_split_binary_q8, file: results.json, key: "branch/shares/*/controlled", agg: min, keys: [rf, xgb, lgbm], fmt: ".2f", expect: "0.95"}
+        - {run: 20261116T120015Z_deadband_channel_split_binary_q8, file: results.json, key: "branch/shares/*/controlled", agg: max, keys: [rf, xgb, lgbm], fmt: ".2f", expect: "1.22"}
+    - id: R4-06
+      check: The consistent four-relay attack with the budget in a physical voltage unit
+      reading: >-
+        The QSVM's white-box macro-F1 is <0>, <1>, and <2> at 0.1, 0.25, and 0.5 of that unit,
+        below the constant-predictor floor each time
+      bears_on: Section~\ref{sec:physics}
+      values:
+        - {run: 20261116T114942Z_consistent_relay_attack_binary_q8_frame_physmag_joint, file: results.json, key: branch_magnitude_unit/qsvm_whitebox_f1/0.1, fmt: ".3f", expect: "0.217"}
+        - {run: 20261116T114942Z_consistent_relay_attack_binary_q8_frame_physmag_joint, file: results.json, key: branch_magnitude_unit/qsvm_whitebox_f1/0.25, fmt: ".3f", expect: "0.209"}
+        - {run: 20261116T114942Z_consistent_relay_attack_binary_q8_frame_physmag_joint, file: results.json, key: branch_magnitude_unit/qsvm_whitebox_f1/0.5, fmt: ".3f", expect: "0.270"}
+    - id: R4-11b
+      check: A relay-local consistency check on the sequence channels, at a 1\% false-alarm rate
+      reading: >-
+        It flags <0> of the white-box attack rows that ignore the physics and <1> of random
+        rows of the same size, and at most <2> of the physically consistent rows
+      bears_on: Sections~\ref{sec:physics} and~\ref{sec:realizability}
+      values:
+        - {run: 20261116T115033Z_consistency_defense_sequence_binary_q8, file: results.json, key: "score_sequence_band/detection_table/*/detection/min", agg: min, where_not: {source: random}, fmt: ".0%", expect: "100%"}
+        - {run: 20261116T115033Z_consistency_defense_sequence_binary_q8, file: results.json, key: "score_sequence_band/detection_table/*/detection/min", agg: min, where: {source: random}, fmt: ".0%", expect: "100%"}
+        - {run: 20261116T115033Z_consistency_defense_sequence_binary_q8, file: results.json, key: "score_sequence_band/stage2_frame_rows/*/flagged_pooled_seeds", agg: max, fmt: ".1%", expect: "0.8%"}
+
+- group: Replication data and reproducibility
+  meaning: reference
+  rows:
+    - id: R5-G1B-M
+      check: "Gas: missing-value indicators in place of the median fill"
+      reading: >-
+        No score moves by more than <0> with pressure log-scaled, or <1> under the main-study
+        pipeline
+      bears_on: Section~\ref{sec:replication}
+      values:
+        - {run: 20261119T113213Z_gas_split_ladder_gas_binary_slog, file: results.json, key: verdict/missingness/max_abs_delta, fmt: ".4f", expect: "0.0096"}
+        - {run: 20261116T180951Z_gas_split_ladder_gas_binary, file: results.json, key: verdict/missingness/max_abs_delta, fmt: ".4f", expect: "0.0085"}
+    - id: R4-12-HL2
+      check: "Gas: training inside the held-out time block (main-study pipeline)"
+      reading: >-
+        It scores <0>, against <1> for as many rows from the other blocks, the same direction
+        as on the MSU/ORNL files
+      bears_on: Section~\ref{sec:replication}
+      values:
+        - {run: 20261116T184505Z_gas_split_ladder_gas_binary, file: results.json, key: verdict/framing_g_time/target_mean, fmt: ".3f", expect: "0.563"}
+        - {run: 20261116T184505Z_gas_split_ladder_gas_binary, file: results.json, key: verdict/framing_g_time/source_matched_mean, fmt: ".3f", expect: "0.581"}
+    - id: R4-25
+      check: "Gas: the RBF kernel narrowed 100-fold (main-study pipeline)"
+      reading: >-
+        Its white-box retention at $0.5\sigma$, the one radius this check ran, rises from <0> to <1>. The
+        MSU/ORNL RBF-SVM keeps <2> at that radius, so the length scale accounts for part of that
+        difference, not all of it; the MSU/ORNL reading at its worst radius is <3>
+      bears_on: Section~\ref{sec:replication}
+      values:
+        - {run: 20261118T131043Z_gas_rbf_length_scale_gas_binary, file: results.json, key: cells/1.0/retention, fmt: ".3f", expect: "0.112"}
+        - {run: 20261118T131043Z_gas_rbf_length_scale_gas_binary, file: results.json, key: cells/100.0/retention, fmt: ".3f", expect: "0.263"}
+        - {run: 20261121T215512Z_whitebox_worst_radius, file: results.json, key: sources/msu/models/rbf_svm/at_budget/retention, fmt: ".3f", expect: "0.685"}
+        - {run: 20261121T215512Z_whitebox_worst_radius, file: results.json, key: sources/msu/models/rbf_svm/worst/retention, fmt: ".3f", expect: "0.243"}
+    - id: R4-12-SQ
+      check: "Gas: the Square search at $0.5\\sigma$"
+      reading: >-
+        Every family falls to between <0> and <1> macro-F1
+      bears_on: Section~\ref{sec:replication}
+      values:
+        - {run: 20261121T184544Z_square_blackbox_gas_binary_slog_q8, file: results.json, key: "verdict/damage/*/square_f1", agg: min, fmt: ".3f", expect: "0.048"}
+        - {run: 20261121T184544Z_square_blackbox_gas_binary_slog_q8, file: results.json, key: "verdict/damage/*/square_f1", agg: max, fmt: ".3f", expect: "0.245"}
+    - id: R4-22-VQC
+      check: "Simulated grids: the VQC's accuracy"
+      reading: >-
+        $<0> \pm <1>$ (14-bus) and $<2> \pm <3>$ (118-bus) macro-F1, against <4> and <5> for
+        the ZZ-map QSVM and <6> and <7> for the RBF-SVM
+      bears_on: Section~\ref{sec:replication}
+      values:
+        - {run: 20261117T061048Z_quantum_vqc_fdia14_binary_q8, file: results.json, key: vqc/aggregate/macro_f1/mean, fmt: ".3f", expect: "0.826"}
+        - {run: 20261117T061048Z_quantum_vqc_fdia14_binary_q8, file: results.json, key: vqc/aggregate/macro_f1/std, fmt: ".3f", expect: "0.040"}
+        - {run: 20261118T214707Z_quantum_vqc_fdia118_binary_q8_eigh, file: results.json, key: vqc/aggregate/macro_f1/mean, fmt: ".3f", expect: "0.702"}
+        - {run: 20261118T214707Z_quantum_vqc_fdia118_binary_q8_eigh, file: results.json, key: vqc/aggregate/macro_f1/std, fmt: ".3f", expect: "0.015"}
+        - {run: 20261118T161541Z_fdia_h1_verdict_fdia14_binary, file: results.json, key: pca8/mean/qsvm_zz, fmt: ".3f", expect: "0.988"}
+        - {run: 20261118T233905Z_fdia_h1_verdict_fdia118_binary, file: results.json, key: pca8/mean/qsvm_zz, fmt: ".3f", expect: "0.993"}
+        - {run: 20261118T161541Z_fdia_h1_verdict_fdia14_binary, file: results.json, key: pca8/mean/rbf_svm, fmt: ".3f", expect: "0.996"}
+        - {run: 20261118T233905Z_fdia_h1_verdict_fdia118_binary, file: results.json, key: pca8/mean/rbf_svm, fmt: ".3f", expect: "0.997"}
+    - id: R4-01
+      check: XGBoost fitted with 1, 4, 10, and 24 threads
+      reading: >-
+        The ten-seed mean moves by <0> on all 128 features and <1> at PCA-8
+      bears_on: Reproducibility statement
+      values:
+        - {run: 20261116T113548Z_xgb_thread_sensitivity_binary, file: results.json, key: summary/regimes/full/statistic/D, fmt: ".4f", expect: "0.0012"}
+        - {run: 20261116T113548Z_xgb_thread_sensitivity_binary, file: results.json, key: summary/regimes/pca8/statistic/D, fmt: ".4f", expect: "0.0011"}

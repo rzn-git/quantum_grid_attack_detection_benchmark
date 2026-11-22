@@ -14,7 +14,9 @@ architecture-specific and it would have to be scoped to `AngleEmbedding` +
 Uses the SAME attack path as the published number: `loss_input_grad` through the simulator,
 chain-ruled through the angle scaler, PGD at the headline budget.
 
-Run:  python -m experiments.run_reuploading_fragility
+Run:  python -m experiments.run_reuploading_fragility [--best-params FILE] [--run-tag TAG]
+The deployed arm reads its depth and learning rate from the tuned file; the re-uploading arm
+stays at its hard-coded P21 configuration.
 
 Graduated from tmp/ because the appendix reports its numbers: white-box retention at 0.5
 sigma is 0.053 +- 0.034 for the re-uploading model against 0.053 +- 0.021 for the deployed
@@ -24,12 +26,15 @@ resolve.
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import numpy as np
 from sklearn.metrics import f1_score
 
+from experiments.exports import Exports
 from experiments.run_reuploading_vqc import ReuploadVQC
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.attacks.evasion import pgd
 from qgridbench.models.classical.zoo import stratified_cap
 from qgridbench.models.quantum.vqc import VQClassifier
@@ -44,9 +49,12 @@ DEPLOYED_RETENTION = 0.0719  # paper Table II, VQC white-box PGD at 0.5 sigma
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_tuned_file_args(ap)
+    args = ap.parse_args()
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
-    best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best = load_tuned_file(args.best_params, "binary", 8)
 
     reg = prepare_regime("binary", "pca", n_components=8, seed=0)
     scale = reg.feature_scale
@@ -61,13 +69,20 @@ def main():
     # P21's best re-uploading configuration, and the deployed one for a matched control
     arms = {
         "reupload_d4_lr0.05": (ReuploadVQC, 4, 0.05),
-        "deployed_d4_lr0.0397": (VQClassifier, best["vqc_depth"], best["vqc_lr"]),
+        f"deployed_d{best['vqc_depth']}_lr{round(best['vqc_lr'], 4)}": (
+            VQClassifier,
+            best["vqc_depth"],
+            best["vqc_lr"],
+        ),
     }
 
     with RunDir(
-        "probe_reupload_fragility_binary_q8", config={"arms": list(arms)}, seeds=SEEDS
+        run_name("probe_reupload_fragility_binary_q8", args.run_tag),
+        config={"arms": list(arms), "best_params": bp_rel},
+        seeds=SEEDS,
     ) as run:
         per_seed = []
+        ex = Exports("binary", bp_rel)
         for s in SEEDS:
             rec = {}
             for name, (cls, depth, lr) in arms.items():
@@ -89,17 +104,15 @@ def main():
                 def grad(X, y, _m=m, _sc=m_scale):
                     return _m.loss_input_grad(reg.angle_scaler.transform(X), y) * _sc
 
-                def f1_of(X, _m=m):
-                    return float(
-                        f1_score(
-                            yte,
-                            _m.predict_proba(reg.angle_scaler.transform(X)).argmax(1),
-                            average="macro",
-                        )
-                    )
+                def f1_of(X, cond, _m=m, _name=name, _s=s):
+                    proba = _m.predict_proba(reg.angle_scaler.transform(X))
+                    ex.predictions(_s, cond, _name, proba, yte, ev)
+                    f1 = float(f1_score(yte, proba.argmax(1), average="macro"))
+                    ex.metric(_s, _name, cond, "macro_f1", f1)
+                    return f1
 
-                clean = f1_of(Xte)
-                rng = spawn_rng(s, "reupfrag")
+                clean = f1_of(Xte, "clean")
+                rng = spawn_rng(s, ex.stream("reupfrag"))
                 curve = {}
                 for e in eps_grid:
                     Xa = pgd(
@@ -112,7 +125,8 @@ def main():
                         step_frac=cfg_adv["evasion"]["pgd"]["step_frac"],
                         rng=rng,
                     )
-                    curve[str(e)] = f1_of(Xa)
+                    ex.crafted_input(s, f"pgd@{e}", name, Xa)
+                    curve[str(e)] = f1_of(Xa, f"pgd@{e}")
                 rec[name] = {
                     "clean": clean,
                     "curve": curve,
@@ -145,6 +159,7 @@ def main():
             if summary["reupload_d4_lr0.05"]["retention_mean"] <= 0.3
             else "SCOPE REQUIRED — re-uploading is materially more robust"
         )
+        ex.write(run.path)
         run.write_json(
             "results.json",
             {

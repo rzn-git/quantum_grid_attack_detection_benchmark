@@ -112,7 +112,11 @@ def test_accuracy_table_prints_display_names_not_code_names(tmp_path, table_dir)
         "VQC",
         "Stratified random",
     ):
-        assert re.search(rf"^{re.escape(shown)}(\$\^\{{[ab]\}}\$)? &", tex, re.M), shown
+        # a quantum or baseline row opens with its meaning tint (design_tokens, ruling 16:18Z)
+        tint = r"(\\rowcolor\{qg[A-Za-z]+Tint\})?"
+        assert re.search(rf"^{tint}{re.escape(shown)}(\$\^\{{[ab]\}}\$)? &", tex, re.M), shown
+    assert "\\rowcolor{qgQuantumTint}VQC" in tex  # quantum rows tinted
+    assert re.search(r"^XGBoost", tex, re.M)  # classical rows are not
     for code in CODE_NAMES:
         assert code not in tex and code.replace("_", r"\_") not in tex, code
     # the CSV sidecar keeps the identifiers
@@ -182,23 +186,35 @@ def test_circuit_figures_are_one_column_wide_with_8pt_labels(tmp_path, monkeypat
     sizes = []
     real_save = figures._save_circuit
 
-    def save(fig, out):
-        real_save.__call__(fig, out)  # rescales and saves; the figure is closed afterwards
+    scales = []
+
+    def save(fig, out, scale=None):
+        # rescales and saves; the figure is closed afterwards
+        used = real_save.__call__(fig, out, scale)
+        scales.append(used)
         sizes.append(
             [t.get_fontsize() for t in fig.findobj(Text) if t.get_visible() and t.get_text()]
         )
         _assert_labels_inside_boxes(fig)
+        return used
 
     monkeypatch.setattr(figures, "_save_circuit", save)
     outs = figures.circuit_diagrams()
 
     assert [o.name for o in outs] == ["circuit_zz.pdf", "circuit_vqc.pdf"]
     assert len(sizes) == 2
+    # nearly one gate size in both drawings: the VQC is saved at the ZZ drawing's scale times a
+    # small factor that keeps its widest label inside its box
+    assert scales[1] == pytest.approx(scales[0] * figures.CIRCUIT_VQC_RELATIVE_SCALE)
+    assert 1.0 <= figures.CIRCUIT_VQC_RELATIVE_SCALE <= 1.1
+    widths = []
     for out, label_sizes in zip(outs, sizes, strict=True):
         box = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)", out.read_bytes())
-        assert abs(float(box.group(1)) - figures.COLUMN_WIDTH_PT) < 1.0, out.name
+        widths.append(float(box.group(1)))
         assert label_sizes and min(label_sizes) >= 8.0, (out.name, min(label_sizes))
         assert b"/Type3" not in out.read_bytes(), out.name
+    assert abs(widths[0] - figures.COLUMN_WIDTH_PT) < 1.0
+    assert widths[1] < figures.COLUMN_WIDTH_PT  # placed at its natural size, never scaled up
 
 
 def test_axis_labels_are_words_with_units_in_parentheses(tmp_path, monkeypatch):
@@ -441,7 +457,9 @@ def test_generated_tables_use_true_minus_and_ieee_number_format(tmp_path, table_
         "vqc_damage": 0.3,
         "classical_damage": 0.2,
         "classical_peer_damage": 0.2,
+        "reverse_damage": 0.03,
         "forward_over_reverse": 10.2,
+        "per_target_adv_f1": {"qsvm": 0.5},
     }
     summary = {
         "mlp": {**arm, "surrogate_positive_rate": 0.1},
@@ -518,3 +536,238 @@ def test_surrogate_control_glob_skips_the_group_surrogate_runs(tmp_path, monkeyp
 
     hit = make_report.latest(make_report.SURROGATE_CONTROL_GLOB)
     assert hit is not None and hit.name == "20260815T195529Z_surrogate_control_binary_q8"
+
+
+def test_split_leak_figure_reads_the_four_runs(tmp_path, monkeypatch):
+    """Draft-v3 Fig. B: renders from toy group-split, leak-decay, FDIA split-gap and per-class
+    runs, and fails when the per-class run was anchored on another group-split run."""
+    monkeypatch.setattr(figures, "FIG_DIR", tmp_path / "fig")
+    g, d, f, c = tmp_path / "g", tmp_path / "d", tmp_path / "f", tmp_path / "c"
+    for p in (g, d, f, c):
+        p.mkdir()
+    near = "nn_frac_within_0.1"
+    (g / "results.json").write_text(
+        json.dumps(
+            {
+                "verdict": {
+                    "level_row": 0.905,
+                    "level_group_mean": 0.594,
+                    "level_group_std": 0.008,
+                    "floor_group_mean": 0.499,
+                },
+                "rows": [
+                    {"split": "row (shipped)", near: 0.458},
+                    {"split": "group", near: 0.047},
+                    {"split": "group", near: 0.053},
+                ],
+            }
+        )
+    )
+
+    def per_class(natural, attack):
+        return {"per_class": {"natural": {"recall": natural}, "attack": {"recall": attack}}}
+
+    units = {
+        "row": per_class(0.83, 0.96),
+        "group0": per_class(0.37, 0.83),
+        "group1": per_class(0.35, 0.81),
+    }
+
+    def write_per_class(anchor):
+        (c / "results.json").write_text(
+            json.dumps({"anchor": {"archived_run": anchor, "pass": True}, "units": units})
+        )
+
+    write_per_class(g.name)
+    curve = [{"gap": k, "macro_f1": 0.61 + 0.26 * np.exp(-(k - 1) / 2.5)} for k in range(1, 13)]
+    (d / "results.json").write_text(
+        json.dumps(
+            {
+                "curves": {"A_lgbm_matched": curve},
+                "fits": {
+                    "A_lgbm": {
+                        "asymptote_fit": 0.61,
+                        "amplitude_fit": 0.26,
+                        "tau_released_rows": 2.5,
+                    }
+                },
+            }
+        )
+    )
+    var = {
+        "rows": [{"split": "row", "level_full_lgbm": 1.0}],
+        "summary": {"day_level_full_lgbm": {"mean": 0.99, "std": 0.006}},
+    }
+    (f / "results.json").write_text(
+        json.dumps({"variants": {"fdia14_binary": var, "fdia118_binary": var}})
+    )
+    out = figures.split_leak_figure(g, d, f, "split_leak", c)
+    assert out.exists() and out.stat().st_size > 0
+    write_per_class("another_group_split_run")
+    with pytest.raises(ValueError, match="anchored on 'another_group_split_run'"):
+        figures.split_leak_figure(g, d, f, "split_leak", c)
+
+
+def test_fdia_budget_figure_reads_square_and_h3_runs(tmp_path, monkeypatch):
+    """Draft-v3 Fig. D: renders from toy Square per_seed.csv and H3 bad-data flag rates."""
+    import pandas as pd
+
+    monkeypatch.setattr(figures, "FIG_DIR", tmp_path / "fig")
+    sq, h3 = tmp_path / "sq", tmp_path / "h3"
+    sq.mkdir()
+    h3.mkdir()
+    rows = []
+    for fam in ("rbf_svm", "rf", "xgb", "lgbm", "mlp", "qsvm", "vqc"):
+        for e in (0.1, 0.3, 0.5):
+            for kind, v in (("square", 0.3), ("random", 0.6)):
+                rows.append(
+                    {
+                        "seed": 0,
+                        "family": fam,
+                        "condition": f"{kind}@{e:g}",
+                        "metric": "macro_f1",
+                        "value": v,
+                    }
+                )
+    pd.DataFrame(rows).to_csv(sq / "per_seed.csv", index=False)
+    rates = {
+        f"{s}|{e:g}|mlp": {"flag_rate": 1.0 if s == "U" else 0.0}
+        for s in "UC"
+        for e in (0.1, 0.25, 0.5)
+    }
+    (h3 / "results.json").write_text(json.dumps({"summary": {"bdd_flag_rates": rates}}))
+    out = figures.fdia_budget_figure({"(a) grid": sq}, {"grid": h3}, "fdia_budget")
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_surrogate_table_reads_a_config_check_arm(tmp_path, table_dir):
+    """Draft v3: the surrogate table can read one arm of a run_vqc_config_check run (the VQC at
+    Table I's configuration), and gives the same table as a plain surrogate run's summary."""
+    arm = {
+        "mlp": {
+            "surrogate_clean_minus_floor": -0.031,
+            "surrogate_positive_rate": 0.966,
+            "vqc_damage": 0.268,
+            "classical_damage": 0.208,
+            "damage_ratio_vqc_over_classical": 1.29,
+            "forward_over_reverse": 4.62,
+        },
+        "mlp_balanced": {
+            "surrogate_clean_minus_floor": 0.035,
+            "surrogate_positive_rate": 0.56,
+            "vqc_damage": 0.211,
+            "classical_damage": 0.204,
+            "damage_ratio_vqc_over_classical": 1.04,
+            "forward_over_reverse": 0.87,
+        },
+        "rbf_svm": {
+            "surrogate_clean_minus_floor": 0.090,
+            "surrogate_positive_rate": None,
+            "vqc_damage": 0.001,
+            "classical_damage": 0.124,
+            "damage_ratio_vqc_over_classical": 0.008,
+            "forward_over_reverse": 0.006,
+        },
+    }
+    for a, clean, rev, q_adv in zip(
+        arm.values(),
+        (0.465, 0.531, 0.587),
+        (0.058, 0.242, 0.172),
+        (0.488, 0.4175, 0.396),
+        strict=True,
+    ):
+        a["surrogate_clean"] = clean
+        a["classical_peer_damage"] = a["classical_damage"]
+        a["reverse_damage"] = rev
+        a["per_target_adv_f1"] = {"qsvm": q_adv}
+    arm.update({"floor": 0.497, "eps": 0.5, "positive_rate_eval": 0.71})
+    plain, cc = tmp_path / "plain", tmp_path / "cc"
+    plain.mkdir()
+    cc.mkdir()
+    (plain / "results.json").write_text(json.dumps({"summary": arm, "per_seed": [{}] * 10}))
+    stats = {"per_family": {"qsvm": {"clean_mean": 0.5631}}}
+    (cc / "results.json").write_text(
+        json.dumps(
+            {
+                "arms": {
+                    "depth6": {
+                        "surrogate_summary": arm,
+                        "table_iii_stats": stats,
+                        "unit_wall_s": [1.0] * 10,
+                    }
+                }
+            }
+        )
+    )
+    a = tables.surrogate_control_table(plain, "s_plain").read_text()
+    b = tables.surrogate_control_table(cc, "s_cc", arm="depth6").read_text()
+
+    def body(t):  # every column but the last, which only an arm can fill
+        return [ln.rsplit(" & ", 1)[0] for ln in t.splitlines()]
+
+    assert body(a) == body(b) and "4.62" in a and "0.242" in a
+    # QSVM retention = per-target adversarial F1 / the arm's QSVM clean score
+    assert "& 0.867 \\\\" in b and "& 0.741 \\\\" in b and "& 0.703 \\\\" in b
+    assert a.count("& --- \\\\") == 3
+    # the arm also writes every family's transferred retention under each surrogate
+    ret = (tables.TABLE_DIR / "s_cc_transfer_retention.csv").read_text().splitlines()
+    assert ret[0] == "family,mlp,mlp_balanced,rbf_svm"
+    assert ret[1].startswith("qsvm,0.8666,0.7414,0.7032")
+
+
+def test_matched_contest_table_marks_best_significance_and_the_mlp_fit(tmp_path, table_dir):
+    """One compact table over the dimensionalities, from each dimensionality's merged run."""
+    levels = {
+        8: {"xgb": 0.5968, "mlp": 0.5223, "vqc": 0.5141, "baseline_majority": 0.9},
+        16: {"xgb": 0.6071, "mlp": 0.4593, "baseline_majority": 0.9},
+    }
+    run_dirs = {}
+    for d, names in levels.items():
+        run_dirs[d] = tmp_path / f"merged_{d}"
+        run_dirs[d].mkdir()
+        (run_dirs[d] / "results.json").write_text(json.dumps(_results(names)))
+    # the merged run says which MLP fit it holds: the class-weighted one at eight dimensions only
+    (run_dirs[8] / "sources.txt").write_text("runs/x_weighted_mlp_baseline_binary_pca8 (mlp row)\n")
+    with pytest.raises(FileNotFoundError, match="which MLP fit"):
+        tables.matched_contest_table(run_dirs, "matched")
+    (run_dirs[16] / "sources.txt").write_text("runs/merged_accuracy_binary_pca16\n")
+    tex = tables.matched_contest_table(run_dirs, "matched").read_text(encoding="utf-8")
+    rows = {line.split(" & ")[0]: line for line in tex.splitlines() if " & " in line}
+    # a chance baseline is never the best model, however high it scores
+    assert (
+        "$^{a}$" in rows["XGBoost"]
+        and "$^{a}$" not in rows["\\rowcolor{qgReferenceTint}Majority class"]
+    )
+    # the MLP is the class-weighted fit at eight dimensions and the unweighted one elsewhere
+    cells = rows["MLP"].split(" & ")
+    assert "c" not in cells[1] and "c" in cells[2]
+    assert rows["\\rowcolor{qgQuantumTint}VQC"].rstrip(" \\").endswith("--")
+    out = (table_dir / "matched.csv").read_text(encoding="utf-8")
+    assert out.splitlines()[0] == "model,macro_f1_pca8,macro_f1_pca16"
+    # the marks compare models with seeds: a model without seeds that leads fails loud
+    doc = json.loads((run_dirs[16] / "results.json").read_text())
+    doc["qsvm_zz"] = {"aggregate": {"macro_f1": {"mean": 0.70}}}
+    (run_dirs[16] / "results.json").write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="leads at 16 dimensions without seeds"):
+        tables.matched_contest_table(run_dirs, "matched")
+
+
+def test_mlp_fit_is_read_from_the_line_that_marks_the_mlp_row(tmp_path):
+    """Only the line marked as the MLP row's source decides, and an unweighted run name on it
+    does not count as the class-weighted fit, whatever its case."""
+    cases = {
+        "runs/a_weighted_mlp_baseline_binary_pca8 (mlp row: W1)\n": True,
+        "runs/a_Unweighted_mlp_baseline_binary_pca8 (mlp row)\n": False,
+        "runs/a_weighted_mlp_baseline_binary_pca8 (timings)\nruns/merged (mlp row)\n": False,
+        "runs/merged_accuracy_binary_pca16\n": False,
+    }
+    for k, (text, expected) in enumerate(cases.items()):
+        run = tmp_path / f"m{k}"
+        run.mkdir()
+        (run / "sources.txt").write_text(text)
+        assert tables._mlp_is_class_weighted(run) is expected
+    twice = tmp_path / "twice"
+    twice.mkdir()
+    (twice / "sources.txt").write_text("a (mlp row)\nb (mlp row)\n")
+    with pytest.raises(ValueError, match="claim the MLP row"):
+        tables._mlp_is_class_weighted(twice)

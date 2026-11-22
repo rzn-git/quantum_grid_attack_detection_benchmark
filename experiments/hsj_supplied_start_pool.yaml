@@ -1,0 +1,34 @@
+# The HopSkipJump restart runs with supplied starting points
+# (experiments/run_hopskipjump_restarts.py --start pool), pooled into one summary per model by
+#   python -m experiments.pool_hsj_restarts --pool-file experiments/hsj_supplied_start_pool.yaml
+#
+# Registered in the decision log at 2026-11-21T04:32Z. Each input starts from a training row the
+# model assigns to another class (200 pool rows per restart, the same rows for every model), in
+# place of the library's uniform random draw. Five restarts per model on the 100 test points and
+# the fitted models of the robustness row. No exhibit reads this pooled run: the black-box column
+# of the paper reports the library start (experiments/hsj_restart_pool.yaml).
+variant: binary
+qubits: 8
+# names the pooled run folder, so it is never taken for the library-start pool the exhibits pin
+tag: supplied_start
+must_match: [max_iter, max_eval, init_eval, eval_subset, start, pool_size]
+min_found_share_all_points: 0.95
+families:
+  logreg:
+    - 20261121T043444Z_probe_hsj_restarts_binary_q8_supplied_start
+  mlp:
+    - 20261121T043444Z_probe_hsj_restarts_binary_q8_supplied_start
+  xgb:
+    - 20261121T043444Z_probe_hsj_restarts_binary_q8_supplied_start
+  lgbm:
+    - 20261121T043444Z_probe_hsj_restarts_binary_q8_supplied_start
+  rbf_svm:
+    - 20261121T043444Z_probe_hsj_restarts_binary_q8_supplied_start
+  rf:
+    - 20261121T044426Z_probe_hsj_restarts_binary_q8_supplied_start   # restarts 0 to 2
+    - 20261121T044425Z_probe_hsj_restarts_binary_q8_supplied_start   # restarts 3 and 4
+  qsvm:
+    - 20261121T050559Z_probe_hsj_restarts_binary_q8_supplied_start
+  vqc:
+    - 20261121T050604Z_probe_hsj_restarts_binary_q8_supplied_start   # restarts 0 to 2
+    - 20261121T052135Z_probe_hsj_restarts_binary_q8_supplied_start   # restarts 3 and 4

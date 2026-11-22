@@ -80,6 +80,7 @@ def main() -> None:
         out = {}
         for fam in args.families:
             out[fam] = {}
+            zoo.clean_proba(fam, X, y)  # runner guard: fail on a degenerate clean predictor
             for name, b in budgets.items():
                 t0 = time.perf_counter()
                 Xa, budget = hopskipjump_attack(

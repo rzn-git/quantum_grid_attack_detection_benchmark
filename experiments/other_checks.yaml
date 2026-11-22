@@ -1,0 +1,167 @@
+# Curated rows of the body table "RQ3 and the other checks" (experiments/build_further_controls.py
+# reads every value from its run artifact and fails loud on a missing run, file or key, and on a
+# value that does not print as its `expect`). The schema is that of further_controls.yaml, with
+# `setting` (what was run) in place of `bears_on`. Beyond that file's keys, a value may carry:
+#   agg: mean            the mean over the entries a "*" step iterates (seeds)
+#   agg: count_at_most   how many of those entries are at most `limit`
+#   minus / over         a second value spec (any run): the difference or the ratio of the two
+#   fmt: count2          a large ratio at two significant figures
+# Sources: the number audit of 2026-11-19 (reports/visual_pass4_20261119/cells_other_checks.csv),
+# which matched each of these numbers to its artifact.
+
+- group: Settings of the quantum models (RQ3)
+  meaning: quantum
+  rows:
+    - id: shots
+      check: Shots
+      setting: tuned ZZ QSVM, trained and tested at 1024 shots
+      reading: loses <0> $\pm$ <1> (three sampling draws)
+      values:
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=835.243|shots=exact|train_sampled=False/clean_f1 - grid/C=835.243|shots=1024|train_sampled=True/clean_f1", fmt: ".3f", sign: positive, expect: "0.058"}
+        - {run: 20260822T080100Z_shot_attack_decomposition_binary_q8, file: results.json, key: "grid/C=835.243|shots=1024|train_sampled=True/clean_f1_std", fmt: ".3f", expect: "0.030"}
+    - id: depolarizing
+      check: Depolarizing noise
+      setting: $p = 0.05$; ZZ QSVM on 400 training rows
+      reading: loses <0>
+      values:
+        - {run: 20260813T185327Z_ablations_binary_q8, file: noise_model.json, key: "0.05/macro_f1 - 0.0/macro_f1", fmt: ".3f", sign: negative, expect: "0.024"}
+    - id: depth
+      check: Depth
+      # the sweep trains every depth at one fixed setting (run_ablations.vqc_depth_sweep:
+      # learning rate 0.05, batch 64, at most 40 epochs, the 2000-row subset, ten seeds),
+      # so its depth-6 score is not the tuned VQC's 0.514 of the matched-contest table
+      setting: VQC at depths 2, 4, and 6, fixed training settings
+      reading: "macro-F1 <3>, <4>, <5> (seed spread up to <6>); gradient variance <0>, <1>, <2>: no collapse"
+      values:
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_2/grad_norm_var_mean, fmt: ".5f", expect: "0.00196"}
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_4/grad_norm_var_mean, fmt: ".5f", expect: "0.00192"}
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_6/grad_norm_var_mean, fmt: ".5f", expect: "0.00195"}
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_2/macro_f1_mean, fmt: ".2f", expect: "0.45"}
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_4/macro_f1_mean, fmt: ".2f", expect: "0.47"}
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_6/macro_f1_mean, fmt: ".2f", expect: "0.44"}
+        - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: "*/macro_f1_std", agg: max, fmt: ".2f", expect: "0.04"}
+    - id: training_rows
+      check: Training rows
+      # a sentence, not a list of four numbers: the fifth blind read could not decode the
+      # earlier cell (reports/readability_review_20261121T070054Z, blocking item 4)
+      setting: every model trained on 250 or 2000 rows
+      reading: >-
+        full-feature XGBoost leads the VQC by <0> at 250 rows and <1> at 2000, and the
+        RY-angle QSVM by <2> and <3>
+      values:
+        - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/250/mean - vqc/250/mean", fmt: ".3f", expect: "0.125"}
+        - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/2000/mean - vqc/2000/mean", fmt: ".3f", expect: "0.118"}
+        - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/250/mean - qkernel_angle_ry/250/mean", fmt: ".3f", expect: "0.116"}
+        - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/2000/mean - qkernel_angle_ry/2000/mean", fmt: ".3f", expect: "0.121"}
+
+- group: Other checks
+  meaning: reference
+  rows:
+    - id: label_flips
+      check: Label flips
+      setting: random, up to 20\% of training labels, five seeds
+      reading: largest mean move <0> (seed spread <1>)
+      values:
+        - {run: 20261121T043235Z_poisoning_seeds_binary_q8_vqc_table1, file: results.json, key: "summary/*/_verdict/max_abs_delta_mean", agg: max, fmt: ".2f", expect: "0.03"}
+        - {run: 20261121T043235Z_poisoning_seeds_binary_q8_vqc_table1, file: results.json, key: summary/mlp/_verdict/max_std, fmt: ".2f", expect: "0.02"}
+    - id: sensor_noise
+      check: Sensor noise
+      setting: Gaussian, 10~dB signal-to-noise ratio, ten seeds
+      # the other three do not lose: in the same run, clean minus noisy is -0.005, -0.001 and
+      # -0.018 for logistic regression, the MLP and the VQC (seed means; words only here,
+      # because the builder prints every value it reads)
+      reading: >-
+        costs the RBF-SVM <0>, random forest <1>, LightGBM <2>, XGBoost <3>, QSVM <4>;
+        the other three models lose nothing
+      values:
+        - {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/evasion/clean/rbf_svm", agg: mean, minus: {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/sensor_noise/rbf_svm/10", agg: mean}, fmt: ".2f", sign: positive, expect: "0.17"}
+        - {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/evasion/clean/rf", agg: mean, minus: {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/sensor_noise/rf/10", agg: mean}, fmt: ".2f", sign: positive, expect: "0.13"}
+        - {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/evasion/clean/lgbm", agg: mean, minus: {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/sensor_noise/lgbm/10", agg: mean}, fmt: ".2f", sign: positive, expect: "0.12"}
+        - {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/evasion/clean/xgb", agg: mean, minus: {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/sensor_noise/xgb/10", agg: mean}, fmt: ".2f", sign: positive, expect: "0.09"}
+        - {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/evasion/clean/qsvm", agg: mean, minus: {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/sensor_noise/qsvm/10", agg: mean}, fmt: ".2f", sign: positive, expect: "0.08"}
+    - id: latency
+      check: Latency (simulated)
+      setting: per sample; slower than logistic regression by
+      reading: about <0>$\times$ (VQC), <1>$\times$ (RY-angle QSVM), <2>$\times$ (ZZ)
+      values:
+        - {run: 20260813T201901Z_quantum_vqc_binary_q8, file: results.json, key: vqc/aggregate/infer_latency_s/mean, over: {run: 20260813T064540Z_classical_binary_pca8, file: results.json, key: logreg/aggregate/infer_latency_s/mean}, fmt: count2, expect: "1900"}
+        - {run: 20260813T071427Z_quantum_qkernel_binary_q8, file: results.json, key: angle_ry/aggregate/infer_latency_s/mean, over: {run: 20260813T064540Z_classical_binary_pca8, file: results.json, key: logreg/aggregate/infer_latency_s/mean}, fmt: count2, expect: "31000"}
+        - {run: 20260813T071427Z_quantum_qkernel_binary_q8, file: results.json, key: zz/aggregate/infer_latency_s/mean, over: {run: 20260813T064540Z_classical_binary_pca8, file: results.json, key: logreg/aggregate/infer_latency_s/mean}, fmt: count2, expect: "75000"}
+
+# grey, not the control hue: a defense is not a control that checks an evaluation choice
+# (exhibit audit 2026-11-20, finding X-a)
+- group: Defenses, attacked at $0.5\sigma$
+  meaning: reference
+  rows:
+    - id: augmentation
+      check: Adversarial augmentation
+      setting: one round on PGD examples, three seeds
+      reading: the VQC gains <0>, under its registered threshold of <1>
+      values:
+        - {run: 20261118T154054Z_adversarial_augmentation_binary_q8_vqc_table1_t6, file: results.json, key: verdict/summary/vqc/robustness_gain, fmt: "+.3f", expect: "+0.012"}
+        - {run: 20261118T154054Z_adversarial_augmentation_binary_q8_vqc_table1_t6, file: params.yaml, key: config/defense_bar, fmt: ".2f", expect: "0.05"}
+    - id: minmax
+      check: Min-max training
+      setting: every minibatch replaced by PGD, ten seeds
+      # limit: the constant-predictor floor (0.415) plus 0.05. It is a cut applied after the
+      # run: the run's own collapse reading counts one-class predictors only, finds none for the
+      # VQC and gives it the verdict "defense". The reading says so.
+      reading: >-
+        the VQC gains <0> and passes its threshold of <1>, but unattacked the defended VQC and
+        MLP score within 0.05 of the constant-predictor floor (a post-run cut) on
+        <2> and <3> of 10 seeds
+      values:
+        - {run: 20261116T214357Z_madry_per_minibatch_binary_q8, file: results.json, key: rules_all_seeds/families/vqc/robustness_gain/mean, fmt: "+.3f", expect: "+0.344"}
+        - {run: 20261116T214357Z_madry_per_minibatch_binary_q8, file: results.json, key: config/defense_bar, fmt: ".2f", expect: "0.05"}
+        - {run: 20261116T214357Z_madry_per_minibatch_binary_q8, file: results.json, key: "rules_all_seeds/families/vqc/clean_defended/per_seed/*", agg: count_at_most, limit: 0.465, fmt: count, expect: "8"}
+        - {run: 20261116T214357Z_madry_per_minibatch_binary_q8, file: results.json, key: "rules_all_seeds/families/mlp/clean_defended/per_seed/*", agg: count_at_most, limit: 0.465, fmt: count, expect: "10"}
+    - id: input_noise
+      check: Input-noise defense~\cite{ngo2026qupid}
+      setting: Gaussian input noise; Square search; three seeds
+      reading: >-
+        the VQC gains <0> and passes its threshold of <3>; <1> of the gain is a higher clean
+        score, and the defended VQC stays <2> below the constant-predictor floor
+      values:
+        - {run: 20261119T044915Z_noise_defense_strength_binary_q8, file: results.json, key: strength_control/gain_under_strongest, fmt: "+.3f", expect: "+0.091"}
+        - {run: 20261119T044915Z_noise_defense_strength_binary_q8, file: results.json, key: "strength_control/seed_mean/defended/clean - strength_control/seed_mean/undefended/clean", fmt: "+.3f", expect: "+0.064"}
+        - {run: 20261119T044915Z_noise_defense_strength_binary_q8, file: results.json, key: "strength_control/floor - strength_control/defended_attacked_under_strongest", fmt: ".2f", expect: "0.31"}
+        - {run: 20261119T044915Z_noise_defense_strength_binary_q8, file: results.json, key: strength_control/bar, fmt: ".2f", expect: "0.05"}
+
+# Section "Physical Consistency": the numbers had no exhibit (blind reads of 2026-11-20 and
+# 2026-11-21). Each reading gives the IEEE 14-bus grid first, then the 118-bus grid. The words
+# "the unperturbed rate", "to" (a range over the six models with clean macro-F1 of at least
+# 0.98) and "random offsets ... to" are checked against the runs in
+# tests/test_further_controls.py, because the builder reads one value per slot. The rows are
+# kept to one table line each: the ten pages have no room for more.
+- group: Physical consistency on the simulated grids (14-bus, then 118-bus)
+  meaning: reference
+  rows:
+    - id: bad_data_test
+      check: Bad-data test
+      setting: share of rows flagged, every budget
+      reading: <0> and <1> ignoring the physics; <2> and <3> consistent, the unperturbed rates
+      values:
+        - {run: 20261118T195101Z_fdia_consistent_attack_fdia14_binary, file: results.json, key: "summary/bdd_flag_rates/*/flag_rate", keys: ["U|0.1|mlp", "U|0.1|random", "U|0.25|mlp", "U|0.25|random", "U|0.5|mlp", "U|0.5|random"], agg: min, fmt: ".0%", expect: "100%"}
+        - {run: 20261119T013227Z_fdia_consistent_attack_fdia118_binary, file: results.json, key: "summary/bdd_flag_rates/*/flag_rate", keys: ["U|0.1|mlp", "U|0.1|random", "U|0.25|mlp", "U|0.25|random", "U|0.5|mlp", "U|0.5|random"], agg: min, fmt: ".0%", expect: "100%"}
+        - {run: 20261118T195101Z_fdia_consistent_attack_fdia14_binary, file: results.json, key: "summary/bdd_flag_rates/*/flag_rate", keys: ["C|0.1|mlp", "C|0.1|qsvm", "C|0.1|rbf_svm", "C|0.1|vqc", "C|0.1|random", "C|0.25|mlp", "C|0.25|qsvm", "C|0.25|rbf_svm", "C|0.25|vqc", "C|0.25|random", "C|0.5|mlp", "C|0.5|qsvm", "C|0.5|rbf_svm", "C|0.5|vqc", "C|0.5|random"], agg: max, fmt: ".1%", expect: "1.2%"}
+        - {run: 20261119T013227Z_fdia_consistent_attack_fdia118_binary, file: results.json, key: "summary/bdd_flag_rates/*/flag_rate", keys: ["C|0.1|mlp", "C|0.1|qsvm", "C|0.1|rbf_svm", "C|0.1|vqc", "C|0.1|random", "C|0.25|mlp", "C|0.25|qsvm", "C|0.25|rbf_svm", "C|0.25|vqc", "C|0.25|random", "C|0.5|mlp", "C|0.5|qsvm", "C|0.5|rbf_svm", "C|0.5|vqc", "C|0.5|random"], agg: max, fmt: ".1%", expect: "0.0%"}
+    - id: square_grids
+      check: Square search at $0.1\sigma$
+      setting: models with clean macro-F1 $\geq 0.98$; PCA $\sigma$
+      reading: <0> to <1>; random noise of that size, <2> to <3>
+      values:
+        - {run: 20261119T044113Z_square_blackbox_fdia118_binary_q8, file: results.json, key: "per_seed/*/square/0.1/qsvm", agg: mean, fmt: ".2f", expect: "0.28"}
+        - {run: 20261119T044113Z_square_blackbox_fdia118_binary_q8, file: results.json, key: "per_seed/*/square/0.1/rbf_svm", agg: mean, fmt: ".2f", expect: "0.33"}
+        - {run: 20261119T044113Z_square_blackbox_fdia118_binary_q8, file: results.json, key: "per_seed/*/random/0.1/rbf_svm", agg: mean, fmt: ".2f", expect: "0.35"}
+        - {run: 20261118T161408Z_square_blackbox_fdia14_binary_q8, file: results.json, key: "per_seed/*/random/0.1/qsvm", agg: mean, fmt: ".2f", expect: "0.91"}
+    - id: consistent_whitebox
+      check: Consistent attack, $0.1\sigma$
+      setting: white-box on the QSVM and on the MLP; state $\sigma$
+      reading: QSVM <0>, <1>; MLP <2>, <3>; random offsets on those two, <4> to <5>
+      values:
+        - {run: 20261118T195101Z_fdia_consistent_attack_fdia14_binary, file: results.json, key: "summary/control5/*/whitebox_f1", where: {attacker: C, eps: 0.1, source: qsvm}, agg: one, fmt: ".2f", expect: "0.26"}
+        - {run: 20261119T013227Z_fdia_consistent_attack_fdia118_binary, file: results.json, key: "summary/control5/*/whitebox_f1", where: {attacker: C, eps: 0.1, source: qsvm}, agg: one, fmt: ".2f", expect: "0.25"}
+        - {run: 20261118T195101Z_fdia_consistent_attack_fdia14_binary, file: results.json, key: "summary/control5/*/whitebox_f1", where: {attacker: C, eps: 0.1, source: mlp}, agg: one, fmt: ".2f", expect: "0.30"}
+        - {run: 20261119T013227Z_fdia_consistent_attack_fdia118_binary, file: results.json, key: "summary/control5/*/whitebox_f1", where: {attacker: C, eps: 0.1, source: mlp}, agg: one, fmt: ".2f", expect: "0.30"}
+        - {run: 20261118T195101Z_fdia_consistent_attack_fdia14_binary, file: results.json, key: "summary/control5/*/random_f1", where: {attacker: C, eps: 0.1, source: mlp}, agg: one, fmt: ".2f", expect: "0.37"}
+        - {run: 20261118T195101Z_fdia_consistent_attack_fdia14_binary, file: results.json, key: "summary/control5/*/random_f1", where: {attacker: C, eps: 0.1, source: qsvm}, agg: one, fmt: ".2f", expect: "0.59"}

@@ -14,12 +14,14 @@ Protocol facts (decision log has rationale):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 from qgridbench.data.preprocess import load_processed
 from qgridbench.features.reduce import AngleScaler, build_preprocessor, fit_transform_splits
 from qgridbench.models.classical.zoo import stratified_cap
+from qgridbench.utils.run_tracking import REPO_ROOT
 
 
 @dataclass
@@ -60,6 +62,20 @@ def prepare_regime(
     return Regime(
         name=regime, n_components=n_components, X=Z, y=ys, angles=angles, angle_scaler=scaler
     )
+
+
+def best_params_path(variant: str, qubits: int) -> Path:
+    """The tuned-hyperparameter file of one variant at one qubit count; fails loud if absent.
+
+    Every robustness runner reads its per-family tuned parameters through this path, so a
+    run on one variant can never silently fit models with another variant's parameters.
+    """
+    path = REPO_ROOT / "results" / f"adv_best_params_{variant}_q{qubits}.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no tuned parameters for variant '{variant}' at {qubits} qubits: {path}"
+        )
+    return path
 
 
 def kernel_subset(reg: Regime, cap: int, seed: int) -> np.ndarray:

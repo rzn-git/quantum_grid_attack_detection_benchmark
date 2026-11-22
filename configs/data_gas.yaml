@@ -1,0 +1,84 @@
+# Morris gas-pipeline SCADA dataset (Morris, Thornton and Turnipseed 2015, "Industrial Control
+# System Simulation and Data Logging for Intrusion Detection System Research"), the second ICS
+# benchmark of the cross-domain replication (study pre-registration R4-12, 2026-11-16).
+# The corrected release IanArffDataset.arff is used; gas_final.arff is flagged by its author
+# as carrying unintended patterns and is never used (decision log 2026-08-24T00:49Z).
+source:
+  base_url: "http://www.ece.uah.edu/~thm0009/icsdatasets"
+  file: "IanArffDataset.arff"
+  raw_dir: "data/raw/gas_pipeline"
+  sha256: "970a7bcd3949d09ac7baff11603538b142f214ee47ed70baf9efb3344f4af459"
+  retrieved: "2026-08-24"
+
+# ARFF attribute order. `time` and the three label columns are never features.
+columns: [address, function, length, setpoint, gain, reset_rate, deadband, cycle_time, rate,
+          system_mode, control_scheme, pump, solenoid, pressure, crc_rate, command_response,
+          time, binary, categorized, specific]
+n_features: 16                 # the first 16 columns
+missing_token: "?"             # structurally absent fields; imputed later, fit on train only
+
+# Schema anchor: the release as described by its source paper. Any mismatch fails loud.
+schema:
+  n_rows: 274628
+  binary_counts: {0: 214580, 1: 60048}
+  categorized_counts: {0: 214580, 1: 7753, 2: 13035, 3: 7900, 4: 20412, 5: 4898, 6: 2176, 7: 3874}
+
+# Variants: label column and its map. Categories (Morris and Gao 2014, Table 7): 1 NMRI,
+# 2 CMRI, 3 MSCI, 4 MPCI, 5 MFCI, 6 DoS, 7 Recon. Three-class view (R4-12 ruling 1):
+# normal / response injection (NMRI, CMRI; false sensor data) / other attacks.
+variants:
+  gas_binary:
+    label: binary
+    map: {0: 0, 1: 1}
+  gas_three:
+    label: categorized
+    map: {0: 0, 1: 1, 2: 1, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2}
+
+# Derived variants (R5-G1 option B, operator go 2026-11-19): the base variant's rows, labels,
+# splits and aux arrays, with a fixed unfitted transform on X. `pressure` carries injected
+# values up to 3.4e38 (attack rows only); they set its standard deviation, so the shared
+# StandardScaler maps every ordinary reading to one value (decision log 2026-11-19T08:50Z).
+# signed_log1p: sign(x) * log1p(|x|), computed in float64, stored at the base dtype (float32).
+derived_variants:
+  gas_binary_slog:
+    base: gas_binary
+    signed_log1p: [pressure]
+
+preprocess:
+  dedupe: true                # exact duplicates on the 16 features + the variant label,
+                               # first occurrence in time kept, BEFORE splitting
+  split:
+    ratios: [0.6, 0.2, 0.2]    # R arm: stratified on the label
+    seed: 1337
+
+# Grouped split arms (R4-12 ruling 3). Grouped arms reuse the R-arm tuned hyperparameters.
+groups:
+  partitions: 5
+  time_blocks: 15              # G-time: equal-duration blocks of the raw capture, 9/3/3
+  # G-type: attack rows grouped by attack NAME (2015 paper, Tables 1-3; in-range and
+  # out-of-range twins share a group). Normal rows keep their R-arm side.
+  attack_names:
+    - [1, 2]
+    - [3, 4]
+    - [5, 6]
+    - [7, 8]
+    - [9, 10]
+    - [11, 12]
+    - [13]
+    - [14]
+    - [15]
+    - [16, 17]
+    - [18]
+    - [19]
+    - [21]
+    - [22]
+    - [20]
+    - [23]
+    - [24]
+    - [25, 26]
+    - [27, 28]
+    - [33, 34]
+    - [35]
+    - [29, 30, 31]
+    - [32]
+  name_cycle: [test, val, train, train, train]

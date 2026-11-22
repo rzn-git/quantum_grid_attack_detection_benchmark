@@ -34,10 +34,17 @@ def set_all_seeds(seed: int) -> np.random.Generator:
 
 
 def spawn_rng(seed: int, stream: str) -> np.random.Generator:
-    """Independent, reproducible RNG stream derived from (seed, stream-name).
+    """Reproducible RNG stream derived from (seed, stream-name).
 
     Use for per-worker / per-component randomness so parallel execution stays
     order-independent and reproducible.
+
+    KNOWN LIMIT, kept because every stored run depends on these streams: only the first eight
+    ASCII characters of the name enter the seed (the modulo keeps the low 63 bits of a
+    little-endian integer). Two names that share their first eight characters are ONE stream:
+    "poison_0.05" and "poison_0.2" draw the same numbers. A new stream name must differ from
+    every other name within its first eight characters. Do not change this function: that would
+    move every seeded result (tests/test_seeding_streams.py fails if it is changed).
     """
     ss = np.random.SeedSequence([seed, int.from_bytes(stream.encode(), "little") % (2**63)])
     return np.random.default_rng(ss)

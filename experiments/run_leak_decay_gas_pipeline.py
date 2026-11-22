@@ -29,10 +29,8 @@ Run:  python -m experiments.run_leak_decay_gas_pipeline [--smoke]
 from __future__ import annotations
 
 import argparse
-import io
 
 import numpy as np
-import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.metrics import f1_score
 
@@ -47,50 +45,27 @@ from experiments.run_leak_decay_curve import (
     per_gap_curve,
     permutation_null_range,
 )
+from qgridbench.data.gas import gas_features, load_gas_frame
 from qgridbench.models.classical.zoo import build, fit_model
-from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger
+from qgridbench.utils.run_tracking import RunDir, get_logger
 from qgridbench.utils.seeding import set_all_seeds
 
 log = get_logger(__name__)
 
-ARFF = REPO_ROOT / "data" / "raw" / "gas_pipeline" / "IanArffDataset.arff"
-COLS = [
-    "address",
-    "function",
-    "length",
-    "setpoint",
-    "gain",
-    "reset_rate",
-    "deadband",
-    "cycle_time",
-    "rate",
-    "system_mode",
-    "control_scheme",
-    "pump",
-    "solenoid",
-    "pressure",
-    "crc_rate",
-    "command_response",
-    "time",
-    "binary",
-    "categorized",
-    "specific",
-]
-FEATURES = COLS[:16]
+FEATURES = gas_features()
 WINDOW = 200
 SEED = 0
 FAMILIES = ["lgbm", "xgb"]
 
 
 def load_gas() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Rows in time order; returns X (NaN kept), y (binary), block (window id), t (seconds)."""
-    lines = ARFF.read_text(encoding="latin-1").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip().lower() == "@data") + 1
-    body = "\n".join(line for line in lines[start:] if line.strip() and not line.startswith("%"))
-    df = pd.read_csv(io.StringIO(body), header=None, names=COLS, na_values="?", quotechar="'")
+    """Rows in time order; returns X (NaN kept), y (binary), block (window id), t (seconds).
+
+    The capture is read, SHA256-checked and schema-validated (monotone time included) by the
+    core loader, qgridbench.data.gas.
+    """
+    df = load_gas_frame()
     t = df["time"].to_numpy(dtype=np.float64)
-    if not np.all(np.diff(t) >= 0):
-        raise SystemExit("time column is not monotone; sort before splitting")
     X = df[FEATURES].to_numpy(dtype=np.float64)
     y = df["binary"].astype(int).to_numpy()
     block = np.arange(len(y)) // WINDOW

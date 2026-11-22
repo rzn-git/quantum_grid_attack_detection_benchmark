@@ -126,6 +126,35 @@ def test_vqc_input_gradient_engines_agree():
     assert np.isfinite(g_adj).all()
 
 
+def test_logreg_gradient_matches_numerical(toy_binary):
+    """Logistic regression's own attack gradient: analytic vs central finite differences."""
+    from sklearn.linear_model import LogisticRegression
+
+    from qgridbench.attacks.gradients import GradProvider, logreg_loss_input_grad
+
+    X, y = toy_binary
+    clf = LogisticRegression(C=0.5, class_weight="balanced", max_iter=3000).fit(X, y)
+    xs, ys = X[:5], y[:5]
+    ana = logreg_loss_input_grad(clf, xs, ys)
+
+    def bce(xrow, yi):
+        p = clf.predict_proba(xrow.reshape(1, -1))[0, 1]
+        return -(yi * np.log(p) + (1 - yi) * np.log(1 - p))
+
+    h = 1e-5
+    num = np.zeros_like(xs)
+    for i in range(len(xs)):
+        for j in range(xs.shape[1]):
+            xp, xm = xs[i].copy(), xs[i].copy()
+            xp[j] += h
+            xm[j] -= h
+            num[i, j] = (bce(xp, ys[i]) - bce(xm, ys[i])) / (2 * h)
+    assert np.allclose(ana, num, atol=1e-6)
+    assert np.array_equal(GradProvider(clf, "logreg")(xs, ys), ana)
+    with pytest.raises(ValueError, match="loss objective only"):
+        GradProvider(clf, "logreg", objective="margin")
+
+
 def test_rbf_svm_gradient_matches_numerical(toy_binary):
     """Classical-kernel control gradient: analytic vs central finite differences."""
     from sklearn.svm import SVC
@@ -216,9 +245,45 @@ def test_qsvm_whitebox_gate_still_blocks_when_evaluating_at_exact_precision():
     assert rep["predictions_agree_exact"] == len(Xck)
     assert "deployed_float32_rel_err" in rep and rep["predictions_agree_deployed"] <= len(Xck)
 
-    # the strict math check must STILL raise under deployed_tol=None
+    # the strict math check must STILL raise under deployed_tol=None: a white-box whose
+    # decision value is off by 1e-3 (a real mismatch, ten times the tolerance) is stopped.
+    # (Against the exact reference this toy's forward error is ~1e-16, so a tiny fwd_tol no
+    # longer forces a raise; decision log 2026-11-18, P11c incident.)
+    wb._b += 1e-3
     with pytest.raises(AssertionError, match="forward mismatch"):
-        assert_matches_reference(wb, svc, states, scaler, Xck, deployed_tol=None, fwd_tol=1e-14)
+        assert_matches_reference(wb, svc, states, scaler, Xck, deployed_tol=None)
+
+
+def test_qsvm_whitebox_gate_reference_is_exact_at_near_degenerate_bandwidth():
+    """Regression (decision log 2026-11-18, P11c incident): the forward gate's exact reference
+    builds the check-row states at complex128 from float64 angles and does not clip the Gram.
+
+    The earlier reference used complex64 check-row states from float32 angles and clipped the
+    Gram; on a near-degenerate case (ZZ, bandwidth 0.03, duals pinned at a large C) that
+    rounding alone exceeds the 1e-4 tolerance while the white-box is exact. That old reference
+    is the `fidelity_kernel(..., exact=True)` evaluated path, still recorded as
+    `evaluated_exact_rel_err`, so the test fails if the gate ever slides back to it."""
+    from sklearn.svm import SVC
+
+    from qgridbench.attacks.qsvm_whitebox import QSVMWhiteBox, assert_matches_reference
+    from qgridbench.features.reduce import AngleScaler
+    from qgridbench.models.quantum.qkernel import compute_states, fidelity_kernel
+
+    rng = np.random.default_rng(0)
+    Xtr = (rng.standard_normal((200, 8)) * 2.0).astype(np.float32)
+    ytr = (Xtr[:, 0] + 0.5 * Xtr[:, 1] + 0.3 * rng.standard_normal(200) > 0).astype(int)
+    Xck = (Xtr[:8] + 1e-3 * rng.standard_normal((8, 8))).astype(np.float32)
+    scaler = AngleScaler().fit(Xtr)
+    states = compute_states(scaler.transform(Xtr), "zz", bandwidth=0.03)
+    svc = SVC(kernel="precomputed", C=1e5, class_weight="balanced").fit(
+        fidelity_kernel(states, states), ytr
+    )
+    wb = QSVMWhiteBox(svc, states, scaler, "zz", 0.03)
+
+    rep = assert_matches_reference(wb, svc, states, scaler, Xck, deployed_tol=None)
+    assert rep["forward_rel_err"] < 1e-8
+    assert rep["evaluated_exact_rel_err"] > 1e-4  # the old reference would have failed the gate
+    assert rep["predictions_agree_exact"] == rep["predictions_agree_evaluated"] == len(Xck)
 
 
 def test_qsvm_whitebox_attack_is_bounded_and_moves_the_decision():

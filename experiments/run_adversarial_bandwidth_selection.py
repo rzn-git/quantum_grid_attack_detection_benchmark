@@ -75,6 +75,7 @@ import torch
 from sklearn.metrics import f1_score
 from sklearn.svm import SVC
 
+from experiments.runner_guard import assert_clean_predictor
 from qgridbench.attacks.evasion import pgd as shipped_pgd
 from qgridbench.attacks.qsvm_whitebox import QSVMWhiteBox
 from qgridbench.models.classical.zoo import stratified_cap
@@ -223,7 +224,9 @@ def main() -> None:
             wb = QSVMWhiteBox(svc, s_tr, reg.angle_scaler, ENCODING, bw)
             adv_va = _f1(yva, wb.decision_function(pgd_margin(wb, Xva, yva, args.eps, scale)))
             zero_va = _f1(yva, wb.decision_function(pgd_margin(wb, Xva, yva, 0.0, scale)))
-            clean_on_attack_subset = _f1(yva, wb.decision_function(Xva))
+            dec = wb.decision_function(Xva)
+            assert_clean_predictor(f"qsvm bandwidth {bw}", yva, dec, dec > 0)
+            clean_on_attack_subset = _f1(yva, dec)
             qcurve.append(
                 {
                     "bandwidth": float(bw),
@@ -250,7 +253,9 @@ def main() -> None:
             wb = RBFWhiteBox(svc, g)
             adv_va = _f1(yva, wb.decision_function(pgd_margin(wb, Xva, yva, args.eps, scale)))
             zero_va = _f1(yva, wb.decision_function(pgd_margin(wb, Xva, yva, 0.0, scale)))
-            clean_on_attack_subset = _f1(yva, wb.decision_function(Xva))
+            dec = wb.decision_function(Xva)
+            assert_clean_predictor(f"rbf_svm gamma {g}", yva, dec, dec > 0)
+            clean_on_attack_subset = _f1(yva, dec)
             ccurve.append(
                 {
                     "gamma": float(g),
@@ -275,13 +280,15 @@ def main() -> None:
                 set_all_seeds(0)
                 svc = SVC(kernel="precomputed", C=pt["C"], class_weight="balanced").fit(K_tr, ytr)
                 wb = QSVMWhiteBox(svc, s_tr, reg.angle_scaler, ENCODING, val)
-                clean = _f1(yte, svc.decision_function(fidelity_kernel(s_te, s_tr)))
+                dec = svc.decision_function(fidelity_kernel(s_te, s_tr))
             else:
                 pt = [p for p in ccurve if p["gamma"] == val][0]
                 set_all_seeds(0)
                 svc = SVC(C=pt["C"], gamma=val, class_weight="balanced").fit(Xtr, ytr)
                 wb = RBFWhiteBox(svc, val)
-                clean = _f1(yte, svc.decision_function(Xte))
+                dec = svc.decision_function(Xte)
+            assert_clean_predictor(f"{fam} {key} {val}", yte, dec, dec > 0)
+            clean = _f1(yte, dec)
             adv = _f1(yte, wb.decision_function(pgd_margin(wb, Xte, yte, args.eps, scale)))
             return {key: float(val), "C": pt["C"], "clean_test": clean, "adv_test": adv}
 

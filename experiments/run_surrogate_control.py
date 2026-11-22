@@ -32,18 +32,119 @@ import json
 
 import numpy as np
 
+from experiments.exports import Exports
 from experiments.run_adversarial import CLASSICAL, FittedZoo, _f1
+from experiments.runner_guard import assert_clean_predictor
 from qgridbench.attacks.evasion import pgd
 from qgridbench.attacks.gradients import GradProvider
 from qgridbench.eval.baselines import trivial_baselines
 from qgridbench.models.classical.zoo import build, fit_model, stratified_cap
-from qgridbench.protocol import prepare_regime
+from qgridbench.protocol import best_params_path, prepare_regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml
 from qgridbench.utils.seeding import set_all_seeds, spawn_rng
 
 log = get_logger(__name__)
 
 CLASSICAL_TARGETS = ["logreg", "rbf_svm", "rf", "xgb", "lgbm"]
+FAMILIES = CLASSICAL + ["qsvm", "vqc"]
+
+
+def seed_record(zoo, best, Xte, yte, eps, scale, pgd_cfg, s, ex=None, test_pos=None):
+    """One seed of the protocol on a fitted zoo: every attack set's macro-F1 for every model.
+
+    The PGD stream is a fresh `spawn_rng(s, "adv")`, the stream the published evasion run used.
+    `ex` (an `Exports`) only records: each prediction, macro-F1 and crafted set, keyed by the
+    evaluation rows' positions in the test split (`test_pos`); no draw or metric depends on it."""
+    rng = spawn_rng(s, ex.stream("adv") if ex is not None else "adv")
+
+    # the corrected surrogate: same class, same params, one extra argument
+    set_all_seeds(s)
+    fixed = build("mlp", best["mlp"], s)
+    fit_model("mlp", fixed, zoo.Xtr, zoo.ytr, balance_via_sample_weight=True)
+
+    def proba(name, X, _f=fixed):
+        p = _f.predict_proba(X) if name == "mlp_balanced" else zoo.predict_proba(name, X)
+        if X is Xte:  # the clean set: a constant or non-finite predictor fails the run
+            assert_clean_predictor(name, yte, p, p.argmax(1))
+        return p
+
+    models = FAMILIES + ["mlp_balanced"]
+    sets = {"clean": Xte}
+    # ORDER IS LOAD-BEARING: `rng` is one stream shared by the calls below, so an arm
+    # inserted ahead of another shifts that one's random PGD start and silently moves
+    # a published number. The third arm therefore goes LAST, leaving the mlp,
+    # mlp_balanced and vqc draws bit-identical to the run the paper already reports.
+    for src, gp in [
+        ("mlp", zoo.grad_provider("mlp")),
+        ("mlp_balanced", GradProvider(fixed, "mlp")),
+        ("vqc", zoo.grad_provider("vqc")),
+        # third arm: different function class, no imbalance defect by construction
+        ("rbf_svm", GradProvider(zoo.models["rbf_svm"], "rbf_svm")),
+    ]:
+        sets[f"pgd_{src}"] = pgd(
+            gp,
+            Xte,
+            yte,
+            eps,
+            scale,
+            n_steps=pgd_cfg["n_steps"],
+            step_frac=pgd_cfg["step_frac"],
+            rng=rng,
+        )
+    f1 = {}
+    for k, X in sets.items():
+        if ex is not None and k != "clean":
+            ex.crafted_input(s, k, k.removeprefix("pgd_"), X)
+        f1[k] = {}
+        for m in models:
+            p = proba(m, X)
+            f1[k][m] = _f1(yte, p)
+            if ex is not None:
+                ex.predictions(s, k, m, p, yte, test_pos)
+                ex.metric(s, m, k, "macro_f1", f1[k][m])
+    pos = {m: float(proba(m, Xte).argmax(1).mean()) for m in ("mlp", "mlp_balanced")}
+    return {"f1": f1, "surrogate_positive_rate": pos}
+
+
+def summarize(per_seed, floor, eps, positive_rate_eval):
+    """Seed means per surrogate arm: forward damage to the VQC, reverse damage, their ratio."""
+
+    def mn(fn):
+        return float(np.mean([fn(p) for p in per_seed]))
+
+    summary = {"floor": floor, "eps": eps, "positive_rate_eval": positive_rate_eval}
+    for src, name in (
+        ("pgd_mlp", "mlp"),
+        ("pgd_mlp_balanced", "mlp_balanced"),
+        ("pgd_rbf_svm", "rbf_svm"),
+    ):
+        vq_c = mn(lambda p: p["f1"]["clean"]["vqc"])
+        vq_a = mn(lambda p, s=src: p["f1"][s]["vqc"])
+        cls_c = float(np.mean([mn(lambda p, t=t: p["f1"]["clean"][t]) for t in CLASSICAL_TARGETS]))
+        cls_a = float(np.mean([mn(lambda p, s=src, t=t: p["f1"][s][t]) for t in CLASSICAL_TARGETS]))
+        # a surrogate is white-box against itself, which would inflate its own classical
+        # mean; the peer column therefore excludes it. Identical to the full set for the
+        # two MLP arms, since CLASSICAL_TARGETS does not contain the MLP.
+        peers = [t for t in CLASSICAL_TARGETS if t != name]
+        peer_c = float(np.mean([mn(lambda p, t=t: p["f1"]["clean"][t]) for t in peers]))
+        peer_a = float(np.mean([mn(lambda p, s=src, t=t: p["f1"][s][t]) for t in peers]))
+        rev_c = mn(lambda p, n=name: p["f1"]["clean"][n])
+        rev_a = mn(lambda p, n=name: p["f1"]["pgd_vqc"][n])
+        summary[name] = {
+            "surrogate_clean": rev_c,
+            "surrogate_clean_minus_floor": rev_c - floor,
+            "surrogate_positive_rate": mn(lambda p, n=name: p["surrogate_positive_rate"][n])
+            if name in ("mlp", "mlp_balanced")
+            else None,
+            "vqc_damage": vq_c - vq_a,
+            "classical_damage": cls_c - cls_a,
+            "classical_peer_damage": peer_c - peer_a,
+            "damage_ratio_vqc_over_classical": (vq_c - vq_a) / (cls_c - cls_a),
+            "reverse_damage": rev_c - rev_a,
+            "forward_over_reverse": (vq_c - vq_a) / max(rev_c - rev_a, 1e-9),
+            "per_target_adv_f1": {t: mn(lambda p, s=src, t=t: p["f1"][s][t]) for t in FAMILIES},
+        }
+    return summary
 
 
 def main():
@@ -52,11 +153,19 @@ def main():
     ap.add_argument("--qubits", type=int, default=8)
     ap.add_argument("--encoding", default="zz")
     ap.add_argument("--seeds", type=int, nargs="*", default=list(range(10)))
-    ap.add_argument("--best-params", default="results/adv_best_params_binary_q8.json")
+    ap.add_argument(
+        "--best-params",
+        default=None,
+        help="tuned-parameter JSON; default: the variant's own file (protocol.best_params_path)",
+    )
     args = ap.parse_args()
 
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
+    args.best_params = (
+        args.best_params
+        or best_params_path(args.variant, args.qubits).relative_to(REPO_ROOT).as_posix()
+    )
     best = json.loads((REPO_ROOT / args.best_params).read_text())
     eps = max(cfg_adv["evasion"]["epsilons"])
     pgd_cfg = cfg_adv["evasion"]["pgd"]
@@ -68,52 +177,19 @@ def main():
     floor = trivial_baselines(reg.y["train"], yte)["baseline_stratified_random"]["aggregate"][
         "macro_f1"
     ]["mean"]
-    families = CLASSICAL + ["qsvm", "vqc"]
-
     tag = f"{args.variant}_q{args.qubits}"
+    ex = Exports(args.variant, args.best_params)
+    ex.extra = {"eval_rows": "test_pos is the position in the variant's test split", "eps": eps}
     with RunDir(f"surrogate_control_{tag}", config=vars(args), seeds=args.seeds) as run:
         per_seed = []
         for s in args.seeds:
-            rng = spawn_rng(s, "adv")  # same stream the published evasion run used
             zoo = FittedZoo(
                 reg, args.encoding, args.qubits, s, cfg_q["qkernel"]["subset_cap"], best
             )
-
-            # the corrected surrogate: same class, same params, one extra argument
-            set_all_seeds(s)
-            fixed = build("mlp", best["mlp"], s)
-            fit_model("mlp", fixed, zoo.Xtr, zoo.ytr, balance_via_sample_weight=True)
-
-            def proba(name, X, _f=fixed):
-                return _f.predict_proba(X) if name == "mlp_balanced" else zoo.predict_proba(name, X)
-
-            models = families + ["mlp_balanced"]
-            sets = {"clean": Xte}
-            # ORDER IS LOAD-BEARING: `rng` is one stream shared by the calls below, so an arm
-            # inserted ahead of another shifts that one's random PGD start and silently moves
-            # a published number. The third arm therefore goes LAST, leaving the mlp,
-            # mlp_balanced and vqc draws bit-identical to the run the paper already reports.
-            for src, gp in [
-                ("mlp", zoo.grad_provider("mlp")),
-                ("mlp_balanced", GradProvider(fixed, "mlp")),
-                ("vqc", zoo.grad_provider("vqc")),
-                # third arm: different function class, no imbalance defect by construction
-                ("rbf_svm", GradProvider(zoo.models["rbf_svm"], "rbf_svm")),
-            ]:
-                sets[f"pgd_{src}"] = pgd(
-                    gp,
-                    Xte,
-                    yte,
-                    eps,
-                    scale,
-                    n_steps=pgd_cfg["n_steps"],
-                    step_frac=pgd_cfg["step_frac"],
-                    rng=rng,
-                )
-            f1 = {k: {m: _f1(yte, proba(m, X)) for m in models} for k, X in sets.items()}
-            pos = {m: float(proba(m, Xte).argmax(1).mean()) for m in ("mlp", "mlp_balanced")}
-            per_seed.append({"f1": f1, "surrogate_positive_rate": pos})
+            rec = seed_record(zoo, best, Xte, yte, eps, scale, pgd_cfg, s, ex, ev)
+            per_seed.append(rec)
             run.write_json("results_partial.json", {"per_seed": per_seed})
+            f1 = rec["f1"]
             log.info(
                 "seed %d | surrogate clean %.3f -> %.3f | VQC under it %.3f -> %.3f",
                 s,
@@ -123,45 +199,8 @@ def main():
                 f1["pgd_mlp_balanced"]["vqc"],
             )
 
-        def mn(fn):
-            return float(np.mean([fn(p) for p in per_seed]))
-
-        summary = {"floor": floor, "eps": eps, "positive_rate_eval": float(yte.mean())}
-        for src, name in (
-            ("pgd_mlp", "mlp"),
-            ("pgd_mlp_balanced", "mlp_balanced"),
-            ("pgd_rbf_svm", "rbf_svm"),
-        ):
-            vq_c = mn(lambda p: p["f1"]["clean"]["vqc"])
-            vq_a = mn(lambda p, s=src: p["f1"][s]["vqc"])
-            cls_c = float(
-                np.mean([mn(lambda p, t=t: p["f1"]["clean"][t]) for t in CLASSICAL_TARGETS])
-            )
-            cls_a = float(
-                np.mean([mn(lambda p, s=src, t=t: p["f1"][s][t]) for t in CLASSICAL_TARGETS])
-            )
-            # a surrogate is white-box against itself, which would inflate its own classical
-            # mean; the peer column therefore excludes it. Identical to the full set for the
-            # two MLP arms, since CLASSICAL_TARGETS does not contain the MLP.
-            peers = [t for t in CLASSICAL_TARGETS if t != name]
-            peer_c = float(np.mean([mn(lambda p, t=t: p["f1"]["clean"][t]) for t in peers]))
-            peer_a = float(np.mean([mn(lambda p, s=src, t=t: p["f1"][s][t]) for t in peers]))
-            rev_c = mn(lambda p, n=name: p["f1"]["clean"][n])
-            rev_a = mn(lambda p, n=name: p["f1"]["pgd_vqc"][n])
-            summary[name] = {
-                "surrogate_clean": rev_c,
-                "surrogate_clean_minus_floor": rev_c - floor,
-                "surrogate_positive_rate": mn(lambda p, n=name: p["surrogate_positive_rate"][n])
-                if name in ("mlp", "mlp_balanced")
-                else None,
-                "vqc_damage": vq_c - vq_a,
-                "classical_damage": cls_c - cls_a,
-                "classical_peer_damage": peer_c - peer_a,
-                "damage_ratio_vqc_over_classical": (vq_c - vq_a) / (cls_c - cls_a),
-                "reverse_damage": rev_c - rev_a,
-                "forward_over_reverse": (vq_c - vq_a) / max(rev_c - rev_a, 1e-9),
-                "per_target_adv_f1": {t: mn(lambda p, s=src, t=t: p["f1"][s][t]) for t in families},
-            }
+        ex.write(run.path)
+        summary = summarize(per_seed, floor, eps, float(yte.mean()))
         run.write_json("results.json", {"per_seed": per_seed, "summary": summary})
         log.info("SUMMARY\n%s", json.dumps(summary, indent=2))
         print(f"-> {run.path}")

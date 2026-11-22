@@ -33,7 +33,8 @@ CONTROLS.
   negative             every defended model at eps = 0 must return its own clean macro-F1
                        exactly; a nonzero-radius attack path that fires at zero radius is broken
 
-Run:  python -m experiments.run_adversarial_augmentation --seeds 0 1 2
+Run:  python -m experiments.run_adversarial_augmentation --seeds 0 1 2 [--best-params FILE]
+      [--run-tag TAG]
 """
 
 from __future__ import annotations
@@ -43,7 +44,9 @@ import json
 
 import numpy as np
 
+from experiments.exports import Exports
 from experiments.run_adversarial import CLASSICAL, FittedZoo, _f1
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.attacks.evasion import pgd
 from qgridbench.attacks.gradients import GradProvider
 from qgridbench.models.classical.zoo import build, fit_model
@@ -70,11 +73,12 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, nargs="*", default=[0, 1, 2])
     ap.add_argument("--train-eps", type=float, default=0.5, help="radius the defense trains at")
     ap.add_argument("--eval-eps", type=float, nargs="*", default=[0.1, 0.3, 0.5])
+    add_tuned_file_args(ap)
     args = ap.parse_args()
 
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
-    best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best = load_tuned_file(args.best_params, args.variant, args.qubits)
     pgd_cfg = cfg_adv["evasion"]["pgd"]
 
     cfg = {
@@ -87,10 +91,13 @@ def main() -> None:
         "published_reference": PUBLISHED,
         "defense_bar": DEFENSE_BAR,
         "picture_bar": PICTURE_BAR,
+        "best_params": bp_rel,
     }
 
     with RunDir(
-        f"adversarial_augmentation_{args.variant}_q{args.qubits}", config=cfg, seeds=args.seeds
+        run_name(f"adversarial_augmentation_{args.variant}_q{args.qubits}", args.run_tag),
+        config=cfg,
+        seeds=args.seeds,
     ) as run:
         reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
         scale = reg.feature_scale
@@ -100,12 +107,21 @@ def main() -> None:
         Xte, yte = reg.X["test"][ev], reg.y["test"][ev]
 
         per_seed = []
+        ex = Exports(args.variant, bp_rel)
+
+        def sc(seed, cond, model, proba):
+            """macro-F1 of one prediction block, recorded in the exports."""
+            ex.predictions(seed, cond, model, proba, yte, ev)
+            f1 = _f1(yte, proba)
+            ex.metric(seed, model, cond, "macro_f1", f1)
+            return f1
+
         for s in args.seeds:
             zoo = FittedZoo(
                 reg, args.encoding, args.qubits, s, cfg_q["qkernel"]["subset_cap"], best
             )
             Xtr, ytr = zoo.Xtr, zoo.ytr
-            rng = spawn_rng(s, "augment")
+            rng = spawn_rng(s, ex.stream("augment"))
 
             # ---- craft the augmentation set against the CLEAN models -----------------
             aug = {}
@@ -120,6 +136,7 @@ def main() -> None:
                     step_frac=pgd_cfg["step_frac"],
                     rng=rng,
                 )
+                ex.crafted_input(s, f"augment_train_pgd@{args.train_eps}", fam, aug[fam])
                 log.info("s%d crafted %s augmentation set (%d rows)", s, fam, len(aug[fam]))
 
             # ---- refit each family on clean + adversarial ----------------------------
@@ -160,9 +177,12 @@ def main() -> None:
             }
 
             cell = {"seed": s, "undefended": {}, "defended": {}, "cross_family": {}}
+            seen: set = set()
             for fam in ("mlp", "vqc"):
-                cell["undefended"][fam] = {"clean": _f1(yte, zoo.predict_proba(fam, Xte))}
-                cell["defended"][fam] = {"clean": _f1(yte, proba_def(fam, Xte))}
+                cell["undefended"][fam] = {
+                    "clean": sc(s, "undefended_clean", fam, zoo.clean_proba(fam, Xte, yte))
+                }
+                cell["defended"][fam] = {"clean": sc(s, "defended_clean", fam, proba_def(fam, Xte))}
             # negative control: the attack path at zero radius must be a no-op
             for fam in ("mlp", "vqc"):
                 z0 = pgd(
@@ -173,9 +193,12 @@ def main() -> None:
                     scale,
                     n_steps=pgd_cfg["n_steps"],
                     step_frac=pgd_cfg["step_frac"],
-                    rng=spawn_rng(s, f"zero_{fam}"),
+                    rng=spawn_rng(s, ex.stream(f"zero_{fam}")),
                 )
-                cell["defended"][fam]["zero_radius"] = _f1(yte, proba_def(fam, z0))
+                ex.crafted_input(s, "defended_pgd_self@0.0", fam, z0)
+                cell["defended"][fam]["zero_radius"] = sc(
+                    s, "defended_zero_radius", fam, proba_def(fam, z0)
+                )
 
             for e in args.eval_eps:
                 ek = str(e)
@@ -189,7 +212,7 @@ def main() -> None:
                         scale,
                         n_steps=pgd_cfg["n_steps"],
                         step_frac=pgd_cfg["step_frac"],
-                        rng=spawn_rng(s, f"und_{fam}_{e}"),
+                        rng=spawn_rng(s, ex.stream(f"und_{fam}_{e}")),
                     )
                     dfn = pgd(
                         gp_def[fam],
@@ -199,19 +222,34 @@ def main() -> None:
                         scale,
                         n_steps=pgd_cfg["n_steps"],
                         step_frac=pgd_cfg["step_frac"],
-                        rng=spawn_rng(s, f"def_{fam}_{e}"),
+                        rng=spawn_rng(s, ex.stream(f"def_{fam}_{e}")),
                     )
-                    cell["undefended"][fam][ek] = _f1(yte, zoo.predict_proba(fam, und))
-                    cell["defended"][fam][ek] = _f1(yte, proba_def(fam, dfn))
+                    ex.crafted_input(s, f"undefended_pgd_self@{ek}", fam, und)
+                    ex.crafted_input(s, f"defended_pgd_self@{ek}", fam, dfn)
+                    cell["undefended"][fam][ek] = sc(
+                        s, f"undefended_pgd_self@{ek}", fam, zoo.predict_proba(fam, und)
+                    )
+                    cell["defended"][fam][ek] = sc(
+                        s, f"defended_pgd_self@{ek}", fam, proba_def(fam, dfn)
+                    )
                     if fam == "vqc":
                         # cross-family: classical damage under the SAME crafted sets
                         cell["cross_family"].setdefault(ek, {})
                         for tag, Xa in (("undefended", und), ("defended", dfn)):
+                            if ("clean", ek) not in seen:
+                                for t in CLASSICAL_TARGETS:
+                                    sc(s, f"clean|for_eps_{ek}", t, zoo.clean_proba(t, Xte, yte))
+                                seen.add(("clean", ek))
                             cls = float(
                                 np.mean(
                                     [
-                                        _f1(yte, zoo.predict_proba(t, Xte))
-                                        - _f1(yte, zoo.predict_proba(t, Xa))
+                                        _f1(yte, zoo.clean_proba(t, Xte, yte))
+                                        - sc(
+                                            s,
+                                            f"vqc_crafted_{tag}@{ek}",
+                                            t,
+                                            zoo.predict_proba(t, Xa),
+                                        )
                                         for t in CLASSICAL_TARGETS
                                     ]
                                 )
@@ -318,6 +356,7 @@ def main() -> None:
                 "here licenses 'augmentation does not change the picture', never 'no defense does'"
             ),
         }
+        ex.write(run.path)
         run.write_json("results.json", {"per_seed": per_seed, "verdict": verdict})
         run.metrics = {
             "vqc_robustness_gain": summary["vqc"]["robustness_gain"],

@@ -96,7 +96,7 @@ def main():
                 "mlp_torch_unweighted": (GradProvider(umlp, "vqc"), umlp.predict_proba),
                 "mlp_weighted": (GradProvider(wmlp, "vqc"), wmlp.predict_proba),
             }
-            vqc_clean_pred = zoo.predict_proba("vqc", Xte).argmax(1)
+            vqc_clean_pred = zoo.clean_proba("vqc", Xte, yte).argmax(1)
             rec = {"positive_rate_eval": float(yte.mean())}
             for name, (gp, pp) in sources.items():
                 Xadv = pgd(

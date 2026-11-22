@@ -27,3 +27,6 @@ black>=24.8
 tabicl>=2.1
 tabm>=0.0.3
 rtdl-revisiting-models>=0.0.2
+
+# R4-22 synthetic FDIA generator (decision log 2026-11-16T12:17Z): AC power flow on IEEE 14/118-bus
+pandapower>=3.5

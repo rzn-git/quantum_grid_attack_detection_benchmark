@@ -60,3 +60,38 @@ def test_angle_encoding_range(toy_binary, toy_splits):
         A = scaler.transform(Z[split])
         assert A.min() >= ANGLE_RANGE[0] - 1e-9
         assert A.max() <= ANGLE_RANGE[1] + 1e-9
+
+
+def test_missing_indicator_is_opt_in_and_fit_on_train(toy_splits):
+    """Default transform is unchanged; add_indicator appends one column per feature that is
+    missing somewhere in TRAIN, fitted on train rows only (R4-12 missingness control)."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((400, 4))
+    X[toy_splits["train"][::3], 1] = np.nan  # feature 1 missing in train
+    X[toy_splits["test"][::2], 2] = np.nan  # feature 2 missing in test only
+    base = fit_transform_splits(build_preprocessor("full"), X, toy_splits)
+    ind = fit_transform_splits(build_preprocessor("full", add_indicator=True), X, toy_splits)
+    assert base["train"].shape[1] == 4 and ind["train"].shape[1] == 5
+    np.testing.assert_array_equal(base["test"], ind["test"][:, :4])
+    np.testing.assert_array_equal(
+        ind["train"][:, 4] > ind["train"][:, 4].mean(), np.isnan(X[toy_splits["train"], 1])
+    )
+
+
+def test_pca_train_features_equal_transform_of_train():
+    """Regression (decision log 2026-11-18, R4-22 incident): on a wide input PCA's "auto"
+    solver is randomized, whose fit_transform returns the approximate U*S, so the train
+    features differed from transform(train) (0.27 on fdia118_binary) while val and test went
+    through transform. The shipped transform pins covariance_eigh: one frozen map on every
+    split, bit for bit."""
+    from sklearn.decomposition import PCA
+
+    rng = np.random.default_rng(0)
+    X = (rng.standard_normal((600, 120)) * np.linspace(3.0, 0.1, 120)).astype(np.float32)
+    auto = PCA(n_components=8, random_state=0)
+    gap = np.abs(auto.fit_transform(X) - auto.transform(X)).max()
+    assert auto._fit_svd_solver == "randomized" and gap > 1e-4  # the hazard is present here
+    pipe = build_preprocessor("pca", n_components=8, seed=0)
+    Z = pipe.fit_transform(X)
+    assert pipe.named_steps["pca"]._fit_svd_solver == "covariance_eigh"
+    np.testing.assert_array_equal(Z, pipe.transform(X))

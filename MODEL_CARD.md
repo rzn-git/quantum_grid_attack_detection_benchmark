@@ -67,7 +67,10 @@ Best classical model per regime, plus every quantum model at matched dimensional
 <!-- END GENERATED: headline -->
 
 **The PCA rows are depressed by two handicaps, and the larger one is not PCA.** Measured, on
-identical features and hyperparameters:
+identical features and hyperparameters (XGBoost and LightGBM at their matched-contest settings,
+`results/runs/20260813T202645Z_ablations_binary_q8/kernel_cap_cost.json`; the learning curve
+and the uncapped 0.787 below are XGBoost at those settings, so they are not the tuned
+full-feature LightGBM, 0.906, that the paper's accuracy-bridge figure starts from):
 
 | handicap | cost in macro-F1 |
 |---|---|
@@ -75,12 +78,12 @@ identical features and hyperparameters:
 | PCA projection, 8 → 16 dims | +0.02 |
 | best quantum vs best classical *at* the cap | −0.032 to −0.042 |
 
-The cap costs roughly **5× the entire quantum–classical gap**, and the learning curve is still
+The cap costs about **six times the quantum–classical gap** (0.197 against 0.033 at 16 dimensions, the paper's accuracy-bridge figure), and the learning curve is still
 climbing at the full split (0.5947 at n=2,000 → 0.7631 at n=47,020), so it sits on the steep
-part, not a plateau. Uncapped, the same PCA-16 feature space reaches 0.787 — 95% of the
-full-feature 0.8275 — so **dimensionality is a mild constraint on this data; sample size is
-the damaging one**. PCA itself is the right choice at this budget: it beats mutual-information
-feature selection by 0.11–0.12 macro-F1 at every dimension count.
+part, not a plateau. Uncapped, the same PCA-16 feature space reaches 0.787 against 0.602
+under the cap, so **dimensionality is a mild constraint on this data; sample size is
+the damaging one** (in the paper's accuracy-bridge figure PCA to 16 components costs 0.063
+and the cap 0.197).
 
 **The comparison remains fair** — every family, classical and quantum, trains on the identical
 2,000-sample stratified subset, so the ordering in the table stands. What the cap changes is
@@ -93,12 +96,21 @@ dimensionality," never "should a utility replace full-feature LightGBM."
 
 **The QSVM's high retention is an artifact of attack availability, now measured rather than
 suspected** (P5a, decision log 2026-08-14T07:55Z). Under a targeted white-box attack —
-differentiating the fidelity kernel through the simulator — the QSVM falls from 0.886
-retention to **0.064** (0.036 ± 0.009 at ε = 0.5σ), with the collapse already underway at
-ε = 0.01σ. The matched control settles it: the identical attack on the tuned RBF-SVM leaves
-**0.685**. The quantum kernel loses at every ε (paired over 10 attack seeds: p = 0.002,
-rank-biserial −1.0, 36 pooled SD). The attacked QSVM lands *below* the stratified-random
-floor, so the attacker inverts this detector rather than merely blinding it.
+differentiating the fidelity kernel through the simulator — the QSVM falls from 0.917
+retention under the transferred attack in the same run (0.886 under the ten-seed shared
+protocol) to **0.023**, read at its worst grid radius inside the 0.5σ budget (0.3σ; 0.064 at
+0.5σ itself), with the collapse already underway at ε = 0.01σ. The matched control: the
+identical attack on the tuned RBF-SVM leaves **0.243** at its worst radius (0.1σ; 0.685 at
+0.5σ, where its output has gone constant). An attacker bounded by a radius may use any
+smaller perturbation, so a white-box result is read at the worst grid radius inside the
+budget, not at the budget alone (decision log 2026-11-20T10:17Z;
+`experiments/read_worst_radius.py`). The quantum kernel is the lower of the two at every ε
+(paired over 10 attack starts, each model at its worst radius: p = 0.002, rank-biserial
+−1.0). Both attacked kernels land far below the constant-predictor floor of 0.415 (macro-F1
+0.013 and 0.143), so the attacker inverts these detectors rather than merely blinding them.
+The worst-radius reading is still an upper bound on what the attacker can do: one who picks
+the radius per input does better, and a score that rises with the radius means the 20-step
+attack has not converged at the larger radii.
 
 **The interleaving mechanism is now measured, not inferred (P17e, 2026-08-15T21:16Z).** Sampling
 the decision function at 200 points along a fixed 0.5σ perturbation ray: at the deployed
@@ -126,7 +138,7 @@ weak F1.
 The evasion column is deliberately **not** apples-to-apples: differentiable models (mlp, vqc)
 are attacked white-box, every other family by transfer from the MLP surrogate, which is
 strictly weaker. The black-box table below and the white-box QSVM/RBF columns are the two
-controls for that asymmetry. **The tree families still admit no white-box attack, so their
+controls for that asymmetry. **The tree families still admit no gradient-based white-box attack, and no tree-specific one was run, so their
 retention figures remain upper bounds — read them as attack availability, not robustness.**
 
 <!-- BEGIN GENERATED: robustness -->
@@ -134,18 +146,19 @@ At ε = 0.5σ, 10 seeds. Retention = adversarial / clean macro-F1.
 
 | Model | clean | under attack | retention | white-box retention | random-perturbation flip rate |
 |---|---|---|---|---|---|
-| qsvm | 0.563 | 0.499 | 0.886 | 0.064 | 45% |
-| logreg | 0.514 | 0.431 | 0.838 | — | 8% |
-| rbf_svm | 0.587 | 0.415 | 0.707 | 0.685 | 24% |
+| qsvm | 0.563 | 0.499 | 0.886 | 0.023 at 0.3σ | 45% |
+| logreg | 0.514 | 0.431 | 0.838 | 0.214 | 8% |
+| rbf_svm | 0.587 | 0.415 | 0.707 | 0.243 at 0.1σ | 24% |
 | mlp | 0.465 | 0.289 | 0.621 | 0.621 | 3% |
 | rf | 0.616 | 0.367 | 0.596 | — | 18% |
 | lgbm | 0.634 | 0.373 | 0.589 | — | 24% |
 | xgb | 0.620 | 0.340 | 0.548 | — | 27% |
-| vqc | 0.502 | 0.036 | 0.072 | 0.072 | 28% |
+| mlp (class-weighted) | 0.521 | 0.259 | 0.498 | 0.076 at 0.5σ only | — |
+| vqc | 0.476 | 0.029 | 0.060 | 0.060 | 25% |
 
 Quantum-vs-classical paired comparisons significant after Holm correction: **12 of 12** — in *both* directions, which is why no family-level quantum robustness claim is made.
 
-The **white-box retention** column is the strongest attack available per family. A `—` means no white-box attack exists for that family (the tree ensembles), so its retention figure is an upper bound, not a robustness measurement.
+The **white-box retention** column is the model's own white-box attack, read at the grid radius inside the budget that leaves the lowest score: an attacker bounded by a radius may use any smaller perturbation. Where that radius is not the budget it is printed beside the figure. The class-weighted MLP's own attack ran at the budget only, so its figure is an upper bound on its worst case. A `—` there means the family received no white-box attack (the tree ensembles admit no gradient-based one, and no tree-specific attack was run), so its retention figure is an upper bound, not a robustness measurement. Logistic regression's figure is from its own run of ten attack starts. A `—` in the flip-rate column means it was not measured.
 <!-- END GENERATED: robustness -->
 
 ## Black-box robustness (HopSkipJump, identical query budget per family)
@@ -155,31 +168,39 @@ prediction — larger means the attacker must work harder. Unlike F1-under-attac
 reward a model for already being wrong; read the two together.
 
 <!-- BEGIN GENERATED: blackbox -->
-| Model | clean F1 | F1 under attack | median $\ell_\infty$ (σ) | queries/sample |
-|---|---|---|---|---|
-| qsvm | 0.556 | 0.379 | 2.818 | 624 |
-| mlp | 0.463 | 0.272 | 0.867 | 597 |
-| lgbm | 0.586 | 0.329 | 0.548 | 610 |
-| logreg | 0.590 | 0.356 | 0.517 | 581 |
-| vqc | 0.466 | 0.440 | 0.452 | 590 |
-| xgb | 0.627 | 0.320 | 0.200 | 605 |
-| rbf_svm | 0.576 | 0.415 | 0.000 | 216 |
-| rf | 0.573 | 0.453 | 0.000 | 248 |
+| Model | clean F1 | F1 under attack | median $\ell_\infty$ (σ), one draw | queries/sample | **median $\ell_\infty$ (σ) over restarts (n restarts)** |
+|---|---|---|---|---|---|
+| qsvm | 0.556 | 0.379 | 2.818 | 624 | 3.413 ± 1.386 (n = 10) |
+| mlp | 0.463 | 0.272 | 0.867 | 597 | 0.877 ± 0.015 (n = 10) |
+| lgbm | 0.586 | 0.329 | 0.548 | 610 | 0.859 ± 0.120 (n = 10) |
+| logreg | 0.590 | 0.356 | 0.517 | 581 | 0.520 ± 0.009 (n = 5) |
+| vqc | 0.466 | 0.440 | 0.452 | 590 | 0.481 ± 0.067 (n = 5) |
+| xgb | 0.627 | 0.320 | 0.200 | 605 | 0.212 ± 0.048 (n = 10) |
+| rbf_svm | 0.576 | 0.415 | 0.000 † | 216 | 0.013 ± 0.001 on 24% of points (n = 5) |
+| rf | 0.573 | 0.453 | 0.000 † | 248 | 0.062 ± 0.042 on 28% of points (n = 5) |
+
+† Not a distortion: on most of the 100 points the attack found no starting point and returned the input unchanged. See the note below the table.
 <!-- END GENERATED: blackbox -->
 
-A median distortion of exactly 0.000 is a **degeneracy signal, not robustness**: the attack
-found adversarial points at the unperturbed inputs, meaning those samples already sat on or
-across the decision boundary.
+A median distortion of exactly 0.000 is **not a distortion and not robustness**. For rbf_svm
+and rf, on about three quarters of the 100 points none of the attack's 100 random starting
+draws left the class the model already predicted, and the library returns such an input
+unchanged (which is why these two rows show about 216 and 248 queries against about 600).
+An earlier version of this card read the zero as adversarial points found at the unperturbed
+inputs; that reading was wrong (decision log 2026-11-20T02:03Z and 02:54Z).
 
-> **Every figure in this table is ONE unreplicated draw (found 2026-08-15, P22b).** ART's
+> **The "one draw" column is ONE unreplicated draw per model (found 2026-08-15, P22b).** ART's
 > HopSkipJump seeds its initial adversarial point from an unseeded `np.random.RandomState()`
 > (`hop_skip_jump.py:295`, ART 1.20.1), which our `np.random.seed(...)` cannot reach — so the
-> attack is not seed-reproducible and the run-to-run spread is unreported here. Measured: three
-> same-seed MLP runs give medians 0.661 / 0.636 / 0.703. Five restarts per family (decision log
-> 2026-08-15T13:40Z) give mean ± std: **qsvm 3.920 ± 1.035** (the published 2.818 is its lowest
-> draw), lgbm 0.882 ± 0.098, mlp 0.870 ± 0.015, logreg 0.520 ± 0.009, vqc 0.458 ± 0.058,
-> xgb 0.211 ± 0.034, rbf_svm and rf bit-stable at 0.000. Read those, not the single draws in the
-> table above. The ordering is unchanged and the section's conclusion does not depend on the
+> attack is not seed-reproducible. Measured: three same-seed MLP runs give medians
+> 0.661 / 0.636 / 0.703. **Read the restart column**: it is the mean ± std the paper reports,
+> generated from the paper's robustness table, with the number of restarts beside each figure.
+> For rbf_svm and rf it is read over the points the attack could start on,
+> with their share beside it; the all-points median is zero in every restart. The qsvm figure
+> moves by sigmas between restarts, because its per-point distortions fall into two groups and
+> the median sits between them. Two single draws are known not to match their restarts: the
+> lgbm draw lies outside its own restart range, and the vqc draw is an earlier VQC configuration
+> than the regenerated one in the restart column. The section's conclusion does not depend on the
 > values — it rests on the random-perturbation control and the white-box result.
 
 ## Compute cost (PCA-8, the matched-dimensionality regime)
@@ -272,16 +293,20 @@ regime on this data that is simultaneously non-degenerate and label-aligned.**
   detectors that partly memorize near-duplicate rows (see the split-protocol note above).
   The comparisons are within-split at fixed models and stand arithmetically; the operating
   regime they describe is the published protocol's, not a leakage-free one. **Exception,
-  measured (P24, 2026-08-16):** the white-box kernel contrast replicates on
-  whole-file-trained kernels — QSVM 0.42–0.48 below the floor vs RBF ≈0.10 below, the
-  QSVM lower in 20/20 attack-seed pairs
-  (`results/runs/20260816T044723Z_probe_group_whitebox_binary_q8/`,
-  reproducible via `experiments/run_group_whitebox_control.py`).
-- **No barren plateau observed at 8 qubits** (gradient-norm variance flat across depth 2/4/6),
-  so the VQC's weak accuracy is model-class fit, not trainability collapse. Plateaus are
-  expected beyond this study's simulator budget — stated as scope, not asserted as a cause.
-- **No quantum data-efficiency advantage:** classical leads by +11.3 macro-F1 points at 250
-  training samples and the gap *widens* to +12.0 at 2,000.
+  measured (P24, 2026-08-16; at six radii, 2026-11-20):** the white-box kernel contrast
+  replicates on whole-file-trained kernels, each read at its worst radius inside 0.5σ — QSVM
+  0.47–0.49 below the stratified-random floor vs RBF 0.35–0.36 below, the QSVM lower in 20/20
+  attack-seed pairs (`results/runs/20261120T112410Z_group_whitebox_control_binary_q8_radii_gate_p0/`
+  and `..._radii_gate_p2/`, reproducible via `experiments/run_group_whitebox_control.py`). Read at
+  0.5σ alone, as the first run did, the RBF reads only ≈0.10 below the floor and the gap
+  looks about three times larger.
+- **No collapse of the gradients with depth at 8 qubits** (gradient-norm variance flat across
+  depth 2/4/6), so the VQC's weak accuracy is model-class fit, not trainability collapse. The
+  plateau is on the qubit axis: the paper's appendix measures the gradient variance falling with
+  the qubit count.
+- **No quantum data-efficiency advantage:** full-feature XGBoost leads the VQC by 0.125 macro-F1
+  at 250 training samples and 0.118 at 2,000, and the RY-angle QSVM by 0.116 and 0.121 (not a
+  matched comparison).
 - **VQC at 16 qubits is unrun** (293 s/epoch projects past 24 h); reducing its budget would
   break the equal-budget fairness contract. The quantum kernel covers 16 qubits.
 - Quantum-kernel seed spread is exactly 0.0000 — deterministic given a fixed subset — so it is
@@ -326,8 +351,8 @@ Every figure resolves to a `results/runs/<UTC>_<name>/` dir carrying resolved co
 `data/processed/splits_<variant>.npz` (split seed 1337).
 
 <!-- BEGIN GENERATED: provenance -->
-- Generated: **2026-08-16T02:51:08Z**
-- Code version: `b071d95-dirty`
+- Generated: **2026-11-22T17:02:33Z**
+- Code version: `2e62932`
 - Regenerate with `python -m experiments.make_report` — every figure above is read
   from `paper/tables/*.csv`, which is itself written only from `results/runs/`.
 <!-- END GENERATED: provenance -->

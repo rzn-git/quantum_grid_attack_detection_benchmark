@@ -52,6 +52,24 @@ typical among training files predicts value, W3 gains a mechanism it did not hav
 W3 is corroborated from a direction it never looked.
 
 Run:  python -m experiments.run_file_quality_predictors
+
+R4-16 RE-SCORE (decision log 2026-11-16T11:34Z, round-4 part-B amendment): `--rescore-from <D2b
+run>` fits nothing. It reads D2b's 90 per-(partition, file) XGBoost excesses (10 partitions),
+recomputes the four predictors above per (partition, file) with `predictors_for` on the same
+shipped partition stream, averages predictor and excess per FILE over the partitions the file
+trains in (n = 15), and scores Spearman rho against two permutation nulls of the per-file excess:
+each predictor's own p95, and the family-wise p95 of the max |rho| over the four predictors.
+  PREDICTABLE      some predictor: |rho| >= 0.50 AND family-wise p < 0.05
+  INTERMEDIATE     otherwise, some predictor beats its own null (own p < 0.05)
+  NOT PREDICTABLE  no predictor beats its own null
+Blocking anchors: the 10 partitions reproduce D2b's (partition, file) keys exactly; n_rows and
+minority_share rho reproduce D2e (+0.6393, +0.3321) to 1e-4; partitions 0-2 reproduce D2's archived
+predictor values to 1e-9. Supplementary second learner: the same rhos against D2c's archived MLP
+per-file excess (`--mlp-from`). Serial by measured profile: the whole re-score is under a minute
+(one partition's preprocessing 0.54 s, peak 0.57 GB; tmp/r4_tier3 probe), below pool start-up cost.
+
+Run:  python -m experiments.run_file_quality_predictors --rescore-from \
+        results/runs/20260823T083323Z_file_value_reproducibility_binary
 """
 
 from __future__ import annotations
@@ -80,6 +98,10 @@ D1_TOL = 1e-6
 RHO_BAR = 0.5
 N_PERM = 2000
 PREDICTORS = ("n_rows", "minority_share", "spread", "centrality")
+D2_RUN = "results/runs/20260823T010202Z_file_quality_predictors_binary"  # R4-16 anchor 3
+D2C_MLP_RUN = "results/runs/20260823T154055Z_file_value_cross_model_mlp_binary"
+N_PERM_RESCORE = 10_000
+D2_PRED_TOL = 1e-9
 
 
 def full_regime_params(model: str) -> dict:
@@ -127,11 +149,195 @@ def predictors_for(Ztr_file: np.ndarray, y_file: np.ndarray, centroids: dict, f:
     }
 
 
+def perm_rhos(preds: np.ndarray, y: np.ndarray, n_perm: int, rng) -> np.ndarray:
+    """|Spearman rho| of each predictor row against n_perm permutations of y: (n_perm, n_pred).
+
+    Spearman is Pearson on ranks, and permuting y then ranking equals permuting y's ranks, so
+    one rank vector is permuted and correlated with every predictor in one product.
+    """
+    rx = np.apply_along_axis(rankdata, 1, preds)
+    rx = (rx - rx.mean(1, keepdims=True)) / rx.std(1, keepdims=True)
+    ry = rankdata(y)
+    perm = np.stack([rng.permutation(ry) for _ in range(n_perm)])
+    perm = (perm - perm.mean(1, keepdims=True)) / perm.std(1, keepdims=True)
+    return np.abs(perm @ rx.T) / len(y)
+
+
+def rescore_verdict(rho: dict, null: np.ndarray, names: tuple, bar: float) -> dict:
+    """Own-null and family-wise p per predictor, and the R4-16 branch."""
+    fw_max = null.max(axis=1)
+    out = {}
+    for j, nm in enumerate(names):
+        a = abs(rho[nm])
+        out[nm] = {
+            "rho": rho[nm],
+            "own_p": float((np.sum(null[:, j] >= a) + 1) / (len(null) + 1)),
+            "own_p95": float(np.percentile(null[:, j], 95)),
+            "fw_p": float((np.sum(fw_max >= a) + 1) / (len(null) + 1)),
+        }
+    fw_p95 = float(np.percentile(fw_max, 95))
+    if any(abs(v["rho"]) >= bar and v["fw_p"] < 0.05 for v in out.values()):
+        branch = "PREDICTABLE"
+    elif any(v["own_p"] < 0.05 for v in out.values()):
+        branch = "INTERMEDIATE"
+    else:
+        branch = "NOT_PREDICTABLE"
+    return {"per_predictor": out, "familywise_p95": fw_p95, "branch": branch}
+
+
+def per_file_means(cells: list[dict], key: str) -> dict:
+    acc: dict = {}
+    for c in cells:
+        acc.setdefault(int(c["file"]), []).append(float(c[key]))
+    return {f: float(np.mean(v)) for f, v in sorted(acc.items())}
+
+
+def rescore_n15(src: str, mlp_src: str, n_perm: int, seed: int) -> None:
+    """R4-16: D2's four predictors re-scored on per-file mean excess at n = 15 (no fitting)."""
+    from experiments.runner_guard import assert_clean_predictor
+
+    cells = json.loads((REPO_ROOT / src / "results.json").read_text())["cells"]
+    mlp_cells = json.loads((REPO_ROOT / mlp_src / "results.json").read_text())["cells"]
+    d2 = json.loads((REPO_ROOT / D2_RUN / "results.json").read_text())["sweep"]
+    parts_n = 1 + max(int(c["partition"]) for c in cells)
+    want_keys = {(int(c["partition"]), int(c["file"])) for c in cells}
+
+    X, y, gid = reconstruct_groups()
+    rng_part = np.random.default_rng(0)  # shipped stream, as D2 / D2b / D2c
+    rows = []
+    for p in range(parts_n):
+        sp, _held = group_splits(gid, y, rng_part)
+        Z = fit_transform_splits(build_preprocessor("full", n_components=None, seed=0), X, sp)
+        gtr, ytr = gid[sp["train"]], y[sp["train"]]
+        files = sorted(np.unique(gtr).tolist())
+        centroids = {f: Z["train"][gtr == f].mean(axis=0) for f in files}
+        for f in files:
+            m = gtr == f
+            rows.append(
+                {"partition": p, "file": f, **predictors_for(Z["train"][m], ytr[m], centroids, f)}
+            )
+
+    got_keys = {(r["partition"], r["file"]) for r in rows}
+    if got_keys != want_keys:
+        raise RuntimeError(f"partition keys differ from {src}: {got_keys ^ want_keys}")
+    d2_by = {(x["partition"], x["file"]): x for x in d2}
+    d2_dev = max(
+        abs(r[k] - d2_by[(r["partition"], r["file"])][k])
+        for r in rows
+        if (r["partition"], r["file"]) in d2_by
+        for k in PREDICTORS
+    )
+    if d2_dev > D2_PRED_TOL:
+        raise RuntimeError(f"predictors do not reproduce D2's archived values: max dev {d2_dev}")
+
+    files = sorted({r["file"] for r in rows})
+    pred = {k: per_file_means(rows, k) for k in PREDICTORS}
+    xgb = per_file_means(cells, "excess")
+    mlp = per_file_means(mlp_cells, "excess")
+    if set(mlp) != set(xgb):
+        raise RuntimeError("D2c MLP cells do not cover the same files as D2b")
+    P = np.array([[pred[k][f] for f in files] for k in PREDICTORS])
+    yx = np.array([xgb[f] for f in files])
+    ym = np.array([mlp[f] for f in files])
+    for k, row in zip(PREDICTORS, P):
+        assert_clean_predictor(k, yx, row, row)
+
+    rho_x = {k: float(spearmanr(P[i], yx).statistic) for i, k in enumerate(PREDICTORS)}
+    rho_m = {k: float(spearmanr(P[i], ym).statistic) for i, k in enumerate(PREDICTORS)}
+    anchors = {"n_rows": 0.6393, "minority_share": 0.3321}  # D2e, logged 2026-08-24T01:01Z
+    a_dev = {k: abs(rho_x[k] - v) for k, v in anchors.items()}
+    if max(a_dev.values()) > 1e-4:
+        raise RuntimeError(f"D2e anchors not reproduced: {a_dev}")
+
+    rng = np.random.default_rng(seed)
+    v_x = rescore_verdict(rho_x, perm_rhos(P, yx, n_perm, rng), PREDICTORS, RHO_BAR)
+    v_m = rescore_verdict(rho_m, perm_rhos(P, ym, n_perm, rng), PREDICTORS, RHO_BAR)
+    rand = rng.normal(size=len(files))
+
+    # sensitivity (reported only): leave one partition out, and within-partition mean ranks
+    lopo = {k: [] for k in PREDICTORS}
+    for p in range(parts_n):
+        keep_c = [c for c in cells if int(c["partition"]) != p]
+        keep_r = [r for r in rows if r["partition"] != p]
+        ex = per_file_means(keep_c, "excess")
+        fs = sorted(ex)
+        for k in PREDICTORS:
+            pk = per_file_means(keep_r, k)
+            lopo[k].append(float(spearmanr([pk[f] for f in fs], [ex[f] for f in fs]).statistic))
+    ranked = []
+    for p in range(parts_n):
+        cp = [c for c in cells if int(c["partition"]) == p]
+        r = rankdata([-float(c["excess"]) for c in cp])
+        ranked += [{"file": c["file"], "rank": float(rr)} for c, rr in zip(cp, r)]
+    mean_rank = per_file_means(ranked, "rank")
+    within = {
+        k: float(spearmanr(P[i], [-mean_rank[f] for f in files]).statistic)
+        for i, k in enumerate(PREDICTORS)
+    }
+
+    cfg = {
+        "mode": "rescore_n15",
+        "source": src,
+        "mlp_source": mlp_src,
+        "n_permutations": n_perm,
+        "perm_seed": seed,
+        "rho_bar": RHO_BAR,
+        "amendment": "decision log 2026-11-16T11:34Z",
+    }
+    with RunDir(f"file_quality_rescore_n15_{VARIANT}", config=cfg, seeds=[seed]) as run:
+        res = {
+            "branch": v_x["branch"],
+            "xgb_primary": v_x,
+            "mlp_supplementary": v_m,
+            "controls": {
+                "partition_keys_match": True,
+                "d2_predictor_max_abs_dev": float(d2_dev),
+                "d2e_anchor_abs_dev": a_dev,
+                "random_predictor_abs_rho": abs(float(spearmanr(rand, yx).statistic)),
+                "pass": True,
+            },
+            "sensitivity": {
+                "leave_one_partition_out_rho": {
+                    k: [float(min(v)), float(max(v))] for k, v in lopo.items()
+                },
+                "within_partition_mean_rank_rho": within,
+                "n_partitions_per_file": {
+                    str(f): sum(1 for c in cells if int(c["file"]) == f) for f in files
+                },
+            },
+            "per_file": {
+                str(f): {**{k: pred[k][f] for k in PREDICTORS}, "xgb": xgb[f], "mlp": mlp[f]}
+                for f in files
+            },
+        }
+        run.write_json("results.json", res)
+        run.metrics.update(
+            {
+                "branch": v_x["branch"],
+                "familywise_p95": v_x["familywise_p95"],
+                **{f"rho_{k}": rho_x[k] for k in PREDICTORS},
+            }
+        )
+        log.info(
+            "R4-16 %s | fw p95 %.3f | %s",
+            v_x["branch"],
+            v_x["familywise_p95"],
+            {k: round(v, 3) for k, v in rho_x.items()},
+        )
+        print(f"-> {run.path}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--partitions", type=int, default=3)
     ap.add_argument("--seeds", type=int, nargs="*", default=[0, 1, 2])
+    ap.add_argument("--rescore-from", default=None, help="D2b run dir: R4-16 n=15 re-score")
+    ap.add_argument("--mlp-from", default=D2C_MLP_RUN, help="D2c MLP run dir (supplementary)")
+    ap.add_argument("--n-perm", type=int, default=N_PERM_RESCORE)
     args = ap.parse_args()
+    if args.rescore_from:
+        rescore_n15(args.rescore_from, args.mlp_from, args.n_perm, seed=0)
+        return
 
     params = full_regime_params("xgb")
     pairs, d1x = d1_pairs(), d1_excess()

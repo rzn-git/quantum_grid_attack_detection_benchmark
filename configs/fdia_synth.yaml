@@ -1,0 +1,94 @@
+# Synthetic false-data-injection (FDIA) dataset on IEEE 14-bus and 118-bus (study pre-registration
+# R4-22; design frozen in the decision log, 2026-11-16T12:17Z, "PRE-RUN AMENDMENT (R4-22").
+# Generator: src/qgridbench/data/fdia_synth.py. Every number the generator uses lives here.
+
+# Load model: the IEEE RTS-96 load-factor tables (weekly peak in % of annual peak, daily peak in %
+# of weekly peak, hourly load in % of daily peak). Source: Grigg et al., "The IEEE Reliability
+# Test System-1996", IEEE Trans. Power Systems 14(3):1010-1020, 1999, doi 10.1109/59.780914,
+# load model unchanged from the IEEE RTS-1979 (IEEE Trans. PAS-98:2047-2054, 1979,
+# doi 10.1109/TPAS.1979.319398). Values transcribed from the University of Washington Power
+# Systems Test Case Archive text files supplied by C. Grigg (labs.ece.uw.edu/pstca/rts/rts96/,
+# Table-02.txt sha256 d7e1cb2b..., Table-03.txt ced5ef7d..., Table-04.txt dea0ace1..., retrieved
+# 2026-11-16), and checked value by value against the archive's independent RTS-1979 file
+# (rts79/ieeerts79.txt, sha256 b732bc27...): all 203 values agree.
+load_factors:
+  weekly: [86.2, 90.0, 87.8, 83.4, 88.0, 84.1, 83.2, 80.6, 74.0, 73.7, 71.5, 72.7, 70.4, 75.0,
+           72.1, 80.0, 75.4, 83.7, 87.0, 88.0, 85.6, 81.1, 90.0, 88.7, 89.6, 86.1, 75.5, 81.6,
+           80.1, 88.0, 72.2, 77.6, 80.0, 72.9, 72.6, 70.5, 78.0, 69.5, 72.4, 72.4, 74.3, 74.4,
+           80.0, 88.1, 88.5, 90.9, 94.0, 89.0, 94.2, 97.0, 100.0, 95.2]
+  daily: [93, 100, 98, 96, 94, 77, 75]   # Monday .. Sunday; the year starts on a Monday
+  hourly:                                # hour 0 = 12-1 am
+    winter_weekday: [67, 63, 60, 59, 59, 60, 74, 86, 95, 96, 96, 95, 95, 95, 93, 94, 99, 100,
+                     100, 96, 91, 83, 73, 63]
+    winter_weekend: [78, 72, 68, 66, 64, 65, 66, 70, 80, 88, 90, 91, 90, 88, 87, 87, 91, 100,
+                     99, 97, 94, 92, 87, 81]
+    summer_weekday: [64, 60, 58, 56, 56, 58, 64, 76, 87, 95, 99, 100, 99, 100, 100, 97, 96, 96,
+                     93, 92, 92, 93, 87, 72]
+    summer_weekend: [74, 70, 66, 65, 64, 62, 62, 66, 81, 86, 91, 93, 93, 92, 91, 91, 92, 94, 95,
+                     95, 100, 93, 88, 80]
+    spring_fall_weekday: [63, 62, 60, 58, 59, 65, 72, 85, 95, 99, 100, 99, 93, 92, 90, 88, 90,
+                          92, 96, 98, 96, 90, 80, 70]
+    spring_fall_weekend: [75, 73, 69, 66, 65, 65, 68, 74, 83, 89, 92, 94, 91, 90, 90, 86, 85, 88,
+                          92, 100, 97, 95, 90, 85]
+  seasons:                               # 1-based week numbers
+    winter: [[1, 8], [44, 52]]
+    summer: [[18, 30]]
+    spring_fall: [[9, 17], [31, 43]]
+  # Hourly values sit at hour midpoints of the 364-day year and are linearly interpolated to the
+  # midpoints of each 15-minute step (np.interp; the two year ends are held flat).
+  steps_per_hour: 4
+
+load_model:
+  ar1_phi: 0.95          # per 15-minute step, multiplicative per-bus deviation
+  ar1_sigma: 0.03        # stationary standard deviation; each day starts from the stationary law
+
+days:
+  n_days: 90             # scenario groups, drawn from the 364-day year
+  blocks: 13             # stratified over the 13 four-week blocks (6 or 7 days each)
+  steps_per_day: 96
+
+episodes:                # a day is n_per_day episodes of `length` snapshots, order seeded per day
+  length: 8              # 2 hours
+  per_day: 12
+  composition: {normal: 4, stealthy: 4, nonstealthy: 4}
+
+measurement:
+  set: [vm, p_inj, q_inj, p_from, q_from]   # SCADA, full redundancy, no PMU angles
+  sigma_rel: 0.01        # 1% of the channel's base-case magnitude (Liu, Wu and Liu, arXiv:2610.31799)
+  floor_rel: 0.01        # near-zero channels: 1% of the median non-zero magnitude of the block
+
+estimator:
+  tol: 1.0e-8            # max |dx| for Gauss-Newton convergence
+  max_iter: 20           # non-convergence counts as a bad-data alarm
+  alpha: 0.01            # chi-square false-alarm rate (decisions)
+  alpha_reported: [0.05]
+
+attack:
+  # Stealthy: a = h(Vm, theta + c) - h(Vm, theta) at the true state (AC-exact). Targets: k
+  # non-reference angle states, k ~ U{1..floor(n_state_angles / 2)} (Tian et al., IEEE Trans.
+  # Cybern. 52(12), 2022). Scales rotate by episode.
+  scales:
+    small: {dist: uniform, low: 0.005, high: 0.02}    # rad; IEEE DataPort 30-bus range [0.005, 0.05]
+    medium: {dist: uniform, low: 0.02, high: 0.05}
+    large: {dist: normal, std: 0.1414213562373095}    # nu^2 = 0.02 (Tian et al. 2022; LESSON)
+  # Non-stealthy: the episode's stealthy injection permuted onto random meters within each
+  # measurement block, with random signs (matched magnitude, consistency broken).
+
+variants:
+  fdia14_binary: {case: case14, classes: [0, 1]}     # 0 normal, 1 stealthy
+  fdia118_binary: {case: case118, classes: [0, 1]}
+
+seed: 0                  # generator seed; each day's stream is SeedSequence([seed, case_id, day])
+
+split:
+  ratios: [0.6, 0.2, 0.2]
+  seed: 1337             # row split, as configs/data.yaml
+  n_folds: 5             # day-grouped disjoint folds: fold k test, k+1 (mod 5) validation
+  fold_seed: 0
+
+compute:
+  worker_peak_rss_gb: 0.25   # measured 0.23 GB for one case118 generation worker (2026-11-16)
+
+controls:
+  paired_decision_agreement_min: 0.99   # stealthy rows: decision equals the paired clean row's
+  h_max_abs_err_mw: 1.0e-6              # h(x) against pandapower at the base case (MW / Mvar)

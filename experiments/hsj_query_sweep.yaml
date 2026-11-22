@@ -1,0 +1,63 @@
+# The HopSkipJump query-budget sweep (experiment `hsj_query_sweep`, registered in the decision
+# log on 2026-11-22T11:30Z; read by experiments/read_hsj_query_sweep.py).
+#
+# Each budget names its attack settings, the range its measured queries per point must fall in,
+# and the restart runs of each model. All runs are of 2026-11-22, the library's random start,
+# two BLAS threads. A restart index is a label, not a repeatable draw (the library draws its
+# starting points unseeded), so the budgets are compared as five-restart samples of this sweep's
+# own runs; the published ten-restart pool is not a comparator.
+variant: binary
+qubits: 8
+restarts_per_cell: 5
+comparators: [mlp, lgbm]
+# registered rules, read at the highest budget
+kill_below_sigma: 0.88      # the classical top at the published budget (decision log 2026-11-21T19:12Z)
+noise_radius_sigma: 0.5     # random noise of this size flips 45% of the QSVM's rows
+cv_threshold: 0.15          # checklist item 6, the gas replication's threshold
+# every run must have attacked the fitted models of this stored run (clean probabilities equal)
+clean_reference_run: 20261120T082045Z_probe_hsj_restarts_binary_q8_repro
+# Read after the result, not registered (decision log 2026-11-22, 14:40Z and 15:34Z): the random
+# noise run on the same 100 rows, at noise_radius_sigma. A row counts as flipped by the noise when
+# its label changes in at least this many of the draws; the reader also gives the any-draw count.
+noise_control:
+  run: 20261118T145335Z_adversarial_binary_q8_random_vqc_table1
+  draws: 3
+  flipped_in_at_least: 2
+budgets:
+  low:      # the published settings
+    max_iter: 10
+    init_eval: 20
+    max_eval: 200
+    queries_per_point: [550, 700]
+    families:
+      qsvm: [20261122T113629Z_probe_hsj_restarts_binary_q8_sweep_low]
+      mlp: [20261122T114300Z_probe_hsj_restarts_binary_q8_sweep_low]
+      lgbm: [20261122T114300Z_probe_hsj_restarts_binary_q8_sweep_low]
+  mid:
+    max_iter: 20
+    init_eval: 40
+    max_eval: 400
+    queries_per_point: [2400, 3250]
+    families:
+      qsvm:
+        - 20261122T121232Z_probe_hsj_restarts_binary_q8_sweep_mid   # restart 0
+        - 20261122T122744Z_probe_hsj_restarts_binary_q8_sweep_mid   # restart 1
+        - 20261122T124435Z_probe_hsj_restarts_binary_q8_sweep_mid   # restart 2
+        - 20261122T125418Z_probe_hsj_restarts_binary_q8_sweep_mid   # restart 3
+        - 20261122T131033Z_probe_hsj_restarts_binary_q8_sweep_mid   # restart 4
+      mlp: [20261122T115931Z_probe_hsj_restarts_binary_q8_sweep_mid]
+      lgbm: [20261122T115931Z_probe_hsj_restarts_binary_q8_sweep_mid]
+  high:
+    max_iter: 40
+    init_eval: 60
+    max_eval: 400
+    queries_per_point: [9300, 12700]
+    families:
+      qsvm:
+        - 20261122T113735Z_probe_hsj_restarts_binary_q8_sweep_high  # restart 0
+        - 20261122T113843Z_probe_hsj_restarts_binary_q8_sweep_high  # restart 1
+        - 20261122T113949Z_probe_hsj_restarts_binary_q8_sweep_high  # restart 2
+        - 20261122T114055Z_probe_hsj_restarts_binary_q8_sweep_high  # restart 3
+        - 20261122T114201Z_probe_hsj_restarts_binary_q8_sweep_high  # restart 4
+      mlp: [20261122T120910Z_probe_hsj_restarts_binary_q8_sweep_high]
+      lgbm: [20261122T120910Z_probe_hsj_restarts_binary_q8_sweep_high]

@@ -21,6 +21,8 @@ therefore reports the JOINT spread over flip draw and fit, which is the honest q
 "how stable is this null" — it is not decomposed here, and the artifact says so.
 
 Run:  python -m experiments.run_poisoning_seeds --seeds 0 1 2 3 4
+      [--best-params FILE --run-tag TAG]   another tuned file (experiments/tuned_file.py); the
+      default is the adversarial suite's file, as the published run used
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import json
 import numpy as np
 
 from experiments.run_adversarial import CLASSICAL, poisoning
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.protocol import prepare_regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml
 
@@ -54,12 +57,15 @@ def main() -> None:
         help="run dir holding results_partial.json; re-aggregates WITHOUT refitting "
         "(the fits are the expensive part and are already archived)",
     )
+    add_tuned_file_args(ap)
     args = ap.parse_args()
 
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
     subset_cap = cfg_q["qkernel"]["subset_cap"]
-    best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best = load_tuned_file(
+        args.best_params or "results/adv_best_params_binary_q8.json", args.variant, args.qubits
+    )
 
     reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
 
@@ -67,6 +73,7 @@ def main() -> None:
         "variant": args.variant,
         "qubits": args.qubits,
         "encoding": args.encoding,
+        "best_params": bp_rel,
         "seeds": args.seeds,
         "rates": cfg_adv["poisoning"]["label_flip_rates"],
         "std_bar": STD_BAR,
@@ -75,7 +82,9 @@ def main() -> None:
     }
 
     with RunDir(
-        f"poisoning_seeds_{args.variant}_q{args.qubits}", config=cfg, seeds=args.seeds
+        run_name(f"poisoning_seeds_{args.variant}_q{args.qubits}", args.run_tag),
+        config=cfg,
+        seeds=args.seeds,
     ) as run:
         per_seed = {}
         if args.reaggregate_from:

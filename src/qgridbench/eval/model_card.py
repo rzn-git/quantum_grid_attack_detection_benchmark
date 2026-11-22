@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import json
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from qgridbench.eval.stats import robustness_stats
@@ -86,25 +87,72 @@ def _headline_block() -> str:
     return "\n".join(lines) if len(lines) > 2 else "_no accuracy artifacts yet_"
 
 
+def _restart_cell(row: dict[str, str] | None) -> str:
+    """HopSkipJump distortion over restarts, as the paper's robustness table prints it."""
+    if not row or not row.get("hsj_median_linf_sigma"):
+        return "—"
+    cell = f"{float(row['hsj_median_linf_sigma']):.3f} ± {float(row['hsj_restart_std']):.3f}"
+    share = row.get("hsj_found_share")
+    if share and float(share) < 1:
+        cell += f" on {float(share) * 100:.0f}% of points"
+    if row.get("hsj_n_restarts"):
+        cell += f" (n = {int(float(row['hsj_n_restarts']))})"
+    return cell
+
+
 def _blackbox_block() -> str:
     rows = _read_csv("blackbox_binary_q8")
     if not rows:
         return "_no black-box artifacts yet_"
-    lines = [
-        "| Model | clean F1 | F1 under attack | median $\\ell_\\infty$ (σ) | queries/sample |",
-        "|---|---|---|---|---|",
-    ]
+    # the restart column is read from the paper's robustness table, so the card cannot quote
+    # a restart figure the paper does not (decision log 2026-11-20T08:16Z); without that table
+    # the column is left out, and a model missing from it fails the build
+    robust = _read_csv("robustness_binary_q8")
+    restarts = {r["model"]: r for r in robust}
+    head = "| Model | clean F1 | F1 under attack | median $\\ell_\\infty$ (σ), one draw | "
+    if robust:
+        lines = [
+            head + "queries/sample | **median $\\ell_\\infty$ (σ) over restarts (n restarts)** |",
+            "|---|---|---|---|---|---|",
+        ]
+    else:
+        lines = [head + "queries/sample |", "|---|---|---|---|---|"]
+    not_started = False
     for r in rows:
-        lines.append(
+        median = _num(r, "median_linf_sigma", "{:.3f}")
+        # a median of exactly zero is the attack returning most inputs unchanged because it
+        # found no starting point on them, not a distortion (decision log 2026-11-20T02:54Z)
+        if r.get("median_linf_sigma") and float(r["median_linf_sigma"]) == 0:
+            median, not_started = f"{median} †", True
+        line = (
             f"| {r['model']} | {_num(r, 'clean_f1', '{:.3f}')} | "
             f"{_num(r, 'adv_f1', '{:.3f}')} | "
-            f"{_num(r, 'median_linf_sigma', '{:.3f}')} | "
+            f"{median} | "
             f"{_num(r, 'queries_per_sample', '{:.0f}')} |"
         )
+        if robust:
+            if r["model"] not in restarts:
+                raise ValueError(
+                    f"black-box model '{r['model']}' has no row in the robustness table, so its "
+                    "restart cell cannot be filled"
+                )
+            line += f" {_restart_cell(restarts[r['model']])} |"
+        lines.append(line)
+    if not robust:
+        lines += ["", "_No robustness table yet, so the restart column is not shown._"]
+    if not_started:
+        lines += [
+            "",
+            "† Not a distortion: on most of the 100 points the attack found no starting point "
+            "and returned the input unchanged. See the note below the table.",
+        ]
     return "\n".join(lines)
 
 
-def _robustness_block() -> str:
+ROW_LABELS = {"mlp_weighted": "mlp (class-weighted)"}
+
+
+def _robustness_block(adv_run: Path | None = None) -> str:
     """Retention under attack beside the white-box column and the random-flip control.
 
     These must be shown together. Protocol retention alone makes the fidelity kernel
@@ -112,57 +160,38 @@ def _robustness_block() -> str:
     breaks it more easily than the transferred attack does, and the white-box column
     confirms it directly (P5a). Reporting any of them without the others is the
     failure this table exists to prevent.
+
+    The rows are the paper's robustness table (`robustness_binary_q8.csv`), read as written.
+    This block used to recompute them from the newest `*_adversarial_binary_q8` run and so kept
+    an earlier VQC than the paper's (decision log 2026-11-20T08:16Z). `adv_run` is the run that
+    table was built from; it supplies the radius, the seed count and the Holm count.
     """
-    runs = REPO_ROOT / "results" / "runs"
-    adv = sorted(d for d in runs.glob("*_adversarial_binary_q8") if (d / "results.json").exists())
-    rnd = sorted(
-        d for d in runs.glob("*_adversarial_binary_q8_random") if (d / "results.json").exists()
-    )
-    wbx = [
-        d
-        for d in sorted(runs.glob("*whitebox_qsvm_binary_q8"))
-        if (d / "results.json").exists()
-        and "p5a_whitebox_qsvm" in json.loads((d / "results.json").read_text())
-    ]
-    if not adv:
+    rows = _read_csv("robustness_binary_q8")
+    if not rows:
         return "_no robustness artifacts yet_"
-
-    st = robustness_stats(adv[-1])
+    if adv_run is None:
+        raise ValueError(
+            "the robustness table exists but refresh() was not given the run it was built "
+            "from (robustness_run); the block's radius, seed count and Holm count come from it"
+        )
+    st = robustness_stats(adv_run)
     if not st:
-        return "_no robustness artifacts yet_"
+        raise ValueError(f"no robustness stats in {adv_run}")
 
-    wb_ret: dict[str, float] = {}
-    if wbx:
-        p5a = json.loads((wbx[-1] / "results.json").read_text())["p5a_whitebox_qsvm"]
-        wb_ret["qsvm"] = p5a["whitebox_retention_at_half"]
-        if "rbf_control" in p5a:
-            wb_ret["rbf_svm"] = p5a["rbf_control"]["whitebox_retention_at_half"]
-    for fam in ("mlp", "vqc"):  # already white-box under the shared protocol
-        if fam in st["per_family"]:
-            wb_ret.setdefault(fam, st["per_family"][fam]["retention"])
-
-    flips: dict[str, float] = {}
-    if rnd:
-        ctrl = json.loads((rnd[-1] / "results.json").read_text())["per_seed"][0]["random_control"]
-        eps = str(st["epsilon"])
-        flips = {
-            f: v["by_radius"][eps]["flip_rate"] for f, v in ctrl.items() if eps in v["by_radius"]
-        }
-
-    eps = st["epsilon"]
     lines = [
-        f"At ε = {eps}σ, {st['n_seeds']} seeds. Retention = adversarial / clean macro-F1.",
+        f"At ε = {st['epsilon']}σ, {st['n_seeds']} seeds. "
+        "Retention = adversarial / clean macro-F1.",
         "",
         "| Model | clean | under attack | retention | white-box retention | "
         "random-perturbation flip rate |",
         "|---|---|---|---|---|---|",
     ]
-    for f, v in sorted(st["per_family"].items(), key=lambda kv: -kv[1]["retention"]):
-        flip = f"{flips[f] * 100:.0f}%" if f in flips else "—"
-        wb = f"{wb_ret[f]:.3f}" if f in wb_ret else "—"
+    for r in rows:
+        flip = f"{float(r['random_flip_rate']) * 100:.0f}%" if r.get("random_flip_rate") else "—"
         lines.append(
-            f"| {f} | {v['clean_mean']:.3f} | {v['adv_mean']:.3f} | {v['retention']:.3f} | "
-            f"{wb} | {flip} |"
+            f"| {ROW_LABELS.get(r['model'], r['model'])} | {_num(r, 'clean_f1', '{:.3f}')} | "
+            f"{_num(r, 'adv_f1', '{:.3f}')} | {_num(r, 'retention', '{:.3f}')} | "
+            f"{_whitebox_cell(r, st['epsilon'])} | {flip} |"
         )
     lines += [
         "",
@@ -170,11 +199,37 @@ def _robustness_block() -> str:
         f"**{st['n_significant_holm']} of {st['n_comparisons']}** — in *both* directions, "
         "which is why no family-level quantum robustness claim is made.",
         "",
-        "The **white-box retention** column is the strongest attack available per family. A `—` "
-        "means no white-box attack exists for that family (the tree ensembles), so its "
-        "retention figure is an upper bound, not a robustness measurement.",
+        "The **white-box retention** column is the model's own white-box attack, read at the "
+        "grid radius inside the budget that leaves the lowest score: an attacker bounded by a "
+        "radius may use any smaller perturbation. Where that radius is not the budget it is "
+        "printed beside the figure. The class-weighted MLP's own attack ran at the budget only, "
+        "so its figure is an upper bound on its worst case. A `—` "
+        "there means the family received no white-box attack (the tree ensembles admit no "
+        "gradient-based one, and no tree-specific attack was run), so its "
+        "retention figure is an upper bound, not a robustness measurement. Logistic regression's "
+        "figure is from its own run of ten attack starts. A `—` in the flip-rate column means it "
+        "was not measured.",
     ]
     return "\n".join(lines)
+
+
+def _whitebox_cell(row: dict, eps: float) -> str:
+    """The model's own white-box retention, with its radius where that is inside the ball, and
+    marked where the attack ran one radius only (an upper bound on the worst case)."""
+    if not row.get("whitebox_retention"):
+        return "—"
+    if not row.get("whitebox_radius_sigma") or row.get("whitebox_single_radius") not in ("0", "1"):
+        raise ValueError(
+            f"{row.get('model')}: the robustness table gives a white-box retention without the "
+            "radius it was read at; rebuild it with `python -m experiments.make_report`"
+        )
+    cell = f"{float(row['whitebox_retention']):.3f}"
+    radius = float(row["whitebox_radius_sigma"])
+    if row["whitebox_single_radius"] == "1":
+        return f"{cell} at {radius:g}σ only"
+    if abs(radius - eps) > 1e-12:
+        cell += f" at {radius:g}σ"
+    return cell
 
 
 def _cost_block() -> str:
@@ -246,11 +301,15 @@ BLOCKS = {
 }
 
 
-def refresh(card: Path = CARD) -> list[str]:
-    """Rewrite every generated block in the card. Returns the keys updated."""
+def refresh(card: Path = CARD, robustness_run: Path | None = None) -> list[str]:
+    """Rewrite every generated block in the card. Returns the keys updated.
+
+    `robustness_run` is the adversarial run the paper's robustness table was built from.
+    """
     text = card.read_text(encoding="utf-8")
     updated = []
-    for key, builder in BLOCKS.items():
+    builders = {**BLOCKS, "robustness": partial(_robustness_block, robustness_run)}
+    for key, builder in builders.items():
         begin, end = BEGIN.format(key=key), END.format(key=key)
         if begin not in text or end not in text:
             raise ValueError(f"MODEL_CARD.md is missing the '{key}' generated block markers")

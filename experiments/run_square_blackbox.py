@@ -24,16 +24,28 @@ exception does not apply. Write-ups name it "Square-schedule random search (tabu
 analogue)", never bare "Square (ART)".
 
 Run:  python -m experiments.run_square_blackbox --seeds 0 1 2
+      python -m experiments.run_square_blackbox --variant gas_binary --seeds 0 1 2
+          --reference-run results/runs/<stamp>_adversarial_gas_binary_q8
+      add [--families F ...] [--best-params FILE] [--run-tag TAG] to attack a subset of the
+      families (each (seed, family, epsilon) has its own stream, so a subset reproduces those
+      cells exactly; the positive control needs the MLP in the subset)
+
+On a variant other than the grid binary one, the positive control's bar is 70% of the MLP's
+white-box PGD damage at 0.5 sigma read from that variant's run_adversarial artifact
+(--reference-run), and the NES comparison is skipped: E14 exists for the grid only.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 
+from experiments.exports import Exports
 from experiments.run_adversarial import FittedZoo, _f1
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.models.classical.zoo import stratified_cap
 from qgridbench.protocol import prepare_regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml
@@ -41,7 +53,6 @@ from qgridbench.utils.seeding import spawn_rng
 
 log = get_logger(__name__)
 
-VARIANT = "binary"
 FAMILIES = ["logreg", "rbf_svm", "rf", "xgb", "lgbm", "mlp", "qsvm", "vqc"]
 CONTROL_MODEL = "mlp"
 E14_ARTIFACT = REPO_ROOT / "results" / "runs" / "20260822T173155Z_score_based_blackbox_binary_q8"
@@ -101,63 +112,113 @@ def square_attack(proba_fn, X, y, eps, scale, rng, max_iter):
     return Xa, float(counter["q"])
 
 
+def whitebox_damage(run_dir: Path, model: str, eps: str = "0.5") -> float:
+    """Mean over seeds of clean minus own white-box PGD macro-F1 in a run_adversarial artifact."""
+    per_seed = json.loads((run_dir / "results.json").read_text())["per_seed"]
+    return float(
+        np.mean(
+            [
+                p["evasion"]["clean"][model] - p["evasion"]["curves"][model]["pgd"][eps]
+                for p in per_seed
+            ]
+        )
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--variant", default="binary")
     ap.add_argument("--qubits", type=int, default=8)
+    ap.add_argument(
+        "--reference-run",
+        default=None,
+        help="run_adversarial artifact of the variant (required unless --variant binary)",
+    )
     ap.add_argument("--encoding", default="zz")
     ap.add_argument("--seeds", type=int, nargs="*", default=[0, 1, 2])
     ap.add_argument("--epsilons", type=float, nargs="*", default=[0.1, 0.3, 0.5])
     ap.add_argument("--max-iter", type=int, default=600, help="~queries/sample; HSJ-matched")
+    ap.add_argument("--families", nargs="*", default=FAMILIES, choices=FAMILIES)
+    add_tuned_file_args(ap)
     args = ap.parse_args()
+    if CONTROL_MODEL not in args.families:
+        raise SystemExit(f"the positive control needs {CONTROL_MODEL} in --families")
+    families = [m for m in FAMILIES if m in args.families]
 
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
-    best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
-    e14 = json.loads((E14_ARTIFACT / "results.json").read_text())["verdict"]["damage"]
-    nes_damage = {m: e14[m]["nes_damage"] for m in e14}  # rf, xgb, lgbm, mlp
+    bp_rel, best = load_tuned_file(args.best_params, args.variant, args.qubits)
+    if args.variant == "binary":
+        e14 = json.loads((E14_ARTIFACT / "results.json").read_text())["verdict"]["damage"]
+        nes_damage = {m: e14[m]["nes_damage"] for m in e14}  # rf, xgb, lgbm, mlp
+        mlp_whitebox_damage = PUBLISHED_MLP_WHITEBOX_DAMAGE
+    else:
+        if not args.reference_run:
+            raise SystemExit("--reference-run is required for a variant other than binary")
+        nes_damage = {}
+        mlp_whitebox_damage = whitebox_damage(REPO_ROOT / args.reference_run, CONTROL_MODEL)
 
     cfg = {
-        "variant": VARIANT,
+        "variant": args.variant,
+        "mlp_whitebox_damage_reference": mlp_whitebox_damage,
+        "reference_run": args.reference_run,
         "qubits": args.qubits,
-        "families": FAMILIES,
+        "families": families,
+        "best_params": bp_rel,
         "epsilons": args.epsilons,
         "max_iter": args.max_iter,
         "budget_note": "max_iter ~= queries/sample, matched to HSJ (~610) and NES (600)",
         "nes_comparators": nes_damage,
-        "nes_artifact": E14_ARTIFACT.name,
+        "nes_artifact": E14_ARTIFACT.name if nes_damage else None,
         "seeds": args.seeds,
         "preregistration": "decision log 2026-09-01T11:05Z (V2-E2)",
     }
-    with RunDir(f"square_blackbox_{VARIANT}_q{args.qubits}", config=cfg, seeds=args.seeds) as run:
-        reg = prepare_regime(VARIANT, "pca", n_components=args.qubits, seed=0)
+    with RunDir(
+        run_name(f"square_blackbox_{args.variant}_q{args.qubits}", args.run_tag),
+        config=cfg,
+        seeds=args.seeds,
+    ) as run:
+        reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
         scale = reg.feature_scale
         ev = stratified_cap(reg.X["test"], reg.y["test"], cfg_adv["eval_subset_adv"], seed=0)
         Xte, yte = reg.X["test"][ev], reg.y["test"][ev]
 
         per_seed = []
+        ex = Exports(args.variant, bp_rel)
+
+        def scored(s, cond, m, X):
+            # runner guard: the clean score fails on a constant or non-finite predictor
+            proba = zoo.clean_proba(m, X, yte) if cond == "clean" else zoo.predict_proba(m, X)
+            ex.predictions(s, cond, m, proba, yte, ev)
+            f1 = _f1(yte, proba)
+            ex.metric(s, m, cond, "macro_f1", f1)
+            return f1
+
         for s in args.seeds:
             zoo = FittedZoo(
                 reg, args.encoding, args.qubits, s, cfg_q["qkernel"]["subset_cap"], best
             )
             cell = {"seed": s, "clean": {}, "square": {}, "random": {}, "queries": {}}
-            for m in FAMILIES:
-                cell["clean"][m] = _f1(yte, zoo.predict_proba(m, Xte))
+            for m in families:
+                cell["clean"][m] = scored(s, "clean", m, Xte)
             for e in args.epsilons:
                 ek = str(e)
                 cell["square"][ek], cell["random"][ek] = {}, {}
-                for m in FAMILIES:
+                for m in families:
                     Xa, qps = square_attack(
                         lambda Z, _m=m, _z=zoo: _z.predict_proba(_m, Z),
                         Xte,
                         yte,
                         e,
                         scale,
-                        spawn_rng(s, f"square_{m}_{e}"),
+                        spawn_rng(s, ex.stream(f"square_{m}_{e}")),
                         args.max_iter,
                     )
                     Xr = Xte + np.random.default_rng(500 + s).uniform(-1, 1, Xte.shape) * e * scale
-                    cell["square"][ek][m] = _f1(yte, zoo.predict_proba(m, Xa))
-                    cell["random"][ek][m] = _f1(yte, zoo.predict_proba(m, Xr))
+                    ex.crafted_input(s, f"square@{ek}", m, Xa)
+                    ex.crafted_input(s, f"random@{ek}|for_{m}", "random", Xr)
+                    cell["square"][ek][m] = scored(s, f"square@{ek}", m, Xa)
+                    cell["random"][ek][m] = scored(s, f"random@{ek}", m, Xr)
                     cell["queries"][m] = qps
                     log.info(
                         "s%d eps %-4s %-7s clean %.4f -> square %.4f (damage %.4f) | random "
@@ -181,7 +242,7 @@ def main() -> None:
             return float(np.mean([c[dk][ek][m] for c in per_seed]))
 
         damage = {}
-        for m in FAMILIES:
+        for m in families:
             clean = float(np.mean([c["clean"][m] for c in per_seed]))
             damage[m] = {
                 "clean": clean,
@@ -191,9 +252,9 @@ def main() -> None:
             }
 
         mlp_sq = damage[CONTROL_MODEL]["square_damage"]
-        pos_ok = mlp_sq >= CONTROL_FRACTION * PUBLISHED_MLP_WHITEBOX_DAMAGE
+        pos_ok = mlp_sq >= CONTROL_FRACTION * mlp_whitebox_damage
         neg_violations = [
-            m for m in FAMILIES if damage[m]["random_damage"] >= damage[m]["square_damage"]
+            m for m in families if damage[m]["random_damage"] >= damage[m]["square_damage"]
         ]
         square_vs_nes = {
             m: damage[m]["square_damage"] - nes_damage[m] for m in nes_damage if m in damage
@@ -202,7 +263,7 @@ def main() -> None:
         verdict = {
             "controls": {
                 "positive_mlp_square_damage": mlp_sq,
-                "positive_required": CONTROL_FRACTION * PUBLISHED_MLP_WHITEBOX_DAMAGE,
+                "positive_required": CONTROL_FRACTION * mlp_whitebox_damage,
                 "positive_pass": bool(pos_ok),
                 "negative_random_matches_square_for": neg_violations,
                 "negative_pass": bool(not neg_violations),
@@ -212,18 +273,22 @@ def main() -> None:
             "damage": damage,
             "square_minus_nes": square_vs_nes,
             "branch": (
-                "square_becomes_binding_for_" + ",".join(binding)
+                "no_nes_comparator"
+                if not nes_damage
+                else "square_becomes_binding_for_" + ",".join(binding)
                 if binding
                 else "e14_method_robust"
             ),
             "ordering_by_square_damage": sorted(
-                FAMILIES, key=lambda m: -damage[m]["square_damage"]
+                families, key=lambda m: -damage[m]["square_damage"]
             ),
         }
         run.metrics = {
             "mlp_square_damage": mlp_sq,
-            "max_square_minus_nes": float(max(square_vs_nes.values())),
+            "max_square_minus_nes": float(max(square_vs_nes.values())) if square_vs_nes else None,
         }
+        ex.extra["random_control_stream"] = "np.random.default_rng(500 + seed) per call"
+        ex.write(run.path)
         run.write_json("results.json", {"per_seed": per_seed, "verdict": verdict})
         log.info("VERDICT\n%s", json.dumps(verdict, indent=2))
         print(f"-> {run.path}")

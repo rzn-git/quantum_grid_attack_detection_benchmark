@@ -1,0 +1,18 @@
+order,panel,unit,side,part,label,run,file,key,fmt,scale,suffix
+1,Split protocol,LightGBM macro-F1,a,value,Row-level split,20260816T023620Z_group_split_control_binary,results.json,verdict/level_row,.3f,1,
+1,Split protocol,LightGBM macro-F1,b,value,Whole files held out,20260816T023620Z_group_split_control_binary,results.json,verdict/level_group_mean,.3f,1,
+2,Surrogate fit,"transfer ratio, MLP→VQC over VQC→MLP",a,value,Unweighted MLP,20261118T162803Z_vqc_table1_regeneration_binary,per_figure.csv,inventory_id=1;figure=forward/reverse| as tuned surrogate>depth6,.1f,5,×
+2,Surrogate fit,"transfer ratio, MLP→VQC over VQC→MLP",b,value,Class-weighted MLP,20261118T162803Z_vqc_table1_regeneration_binary,per_figure.csv,inventory_id=4;figure=forward/reverse| balanced surrogate>depth6,.1f,5,×
+3,Attack availability,QSVM retention,a,value,Transferred attack,20260814T074242Z_whitebox_qsvm_binary_q8,results.json,p5a_whitebox_qsvm/transferred_retention_at_half,.3f,1,
+3,Attack availability,QSVM retention,b,value,White-box attack,20261121T215512Z_whitebox_worst_radius,results.json,sources/msu/models/qsvm/worst/retention,.3f,1,
+4,Attack objective,"QSVM macro-F1, worst radius inside 2σ",a,value,Loss-seeking,20261120T122742Z_regularization_radii_verdict,results.json,per_c/835.2430509931106/loss/worst/f1_minus_floor + constant_predictor_floor,.3f,1,
+4,Attack objective,"QSVM macro-F1, worst radius inside 2σ",b,value,Distance-seeking,20261120T122742Z_regularization_radii_verdict,results.json,per_c/835.2430509931106/mass/worst/f1_minus_floor + constant_predictor_floor,.3f,1,
+4,Attack objective,"QSVM macro-F1, worst radius inside 2σ",ab,mark,constant-predictor floor,20261120T122742Z_regularization_radii_verdict,results.json,constant_predictor_floor,.3f,1,
+5,Reading radius,RBF-SVM white-box retention,a,value,At the 0.5σ budget,20261121T215512Z_whitebox_worst_radius,results.json,sources/msu/models/rbf_svm/at_budget/retention,.3f,1,
+5,Reading radius,RBF-SVM white-box retention,b,value,Worst radius inside it,20261121T215512Z_whitebox_worst_radius,results.json,sources/msu/models/rbf_svm/worst/retention,.3f,1,
+6,Starting point,"QSVM distortion (σ), ≈600 queries",a,lo,One run,20261120T094143Z_hsj_restarts_pooled_binary_q8,results.json,summary/qsvm/min,.2f,5,
+6,Starting point,"QSVM distortion (σ), ≈600 queries",a,hi,One run,20261120T094143Z_hsj_restarts_pooled_binary_q8,results.json,summary/qsvm/max,.2f,5,
+6,Starting point,"QSVM distortion (σ), ≈600 queries",b,mean,Ten restarts,20261120T094143Z_hsj_restarts_pooled_binary_q8,results.json,summary/qsvm/mean,.2f,5,
+6,Starting point,"QSVM distortion (σ), ≈600 queries",b,std,Ten restarts,20261120T094143Z_hsj_restarts_pooled_binary_q8,results.json,summary/qsvm/std,.2f,5,
+7,Measurement geometry,to flip a QSVM prediction,a,value,HopSkipJump finds,20261120T094143Z_hsj_restarts_pooled_binary_q8,results.json,summary/qsvm/mean,.2f,5,σ
+7,Measurement geometry,to flip a QSVM prediction,b,value,Noise of 0.5σ flips,20261118T145335Z_adversarial_binary_q8_random_vqc_table1,results.json,per_seed/0/random_control/qsvm/by_radius/0.5/flip_rate,.0%,1,

@@ -230,7 +230,7 @@ def main() -> None:
 
             cell = {"seed": s, "rounds": trace, "undefended": {}, "defended": {}, "classical": {}}
             for fam in ("mlp", "vqc"):
-                cell["undefended"][fam] = {"clean": _f1(yte, zoo.predict_proba(fam, Xte))}
+                cell["undefended"][fam] = {"clean": _f1(yte, zoo.clean_proba(fam, Xte, yte))}
                 cell["defended"][fam] = {"clean": _f1(yte, proba_def(fam, Xte))}
                 z0 = pgd(
                     gp_def[fam],
@@ -282,7 +282,7 @@ def main() -> None:
                         rng=spawn_rng(s, f"sur_{c}_{e}"),
                     )
                     cell["classical"].setdefault(c, {})["clean"] = _f1(
-                        yte, zoo.predict_proba(c, Xte)
+                        yte, zoo.clean_proba(c, Xte, yte)
                     )
                     cell["classical"][c][ek] = _f1(yte, zoo.predict_proba(c, sur))
             per_seed.append(cell)

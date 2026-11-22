@@ -1,10 +1,16 @@
 """Quantum kernel + VQC sanity: PSD, self-fidelity, diagnostics, reproducibility."""
 
+from pathlib import Path
+
 import numpy as np
+import pennylane as qml
+import pytest
+import torch
 
 from qgridbench.models.quantum.qkernel import (
     compute_states,
     cosine_fidelity_kernel,
+    feature_map,
     fidelity_kernel,
     geometric_difference,
     kernel_target_alignment,
@@ -197,7 +203,7 @@ def test_vqc_batched_forward_matches_per_sample():
         assert np.allclose(batched, per_sample, atol=1e-10)
 
 
-def test_vqc_chunking_bounds_memory_and_preserves_results():
+def test_vqc_chunking_bounds_memory_and_preserves_results(monkeypatch):
     """Chunked inference must be numerically identical to unchunked."""
 
     from qgridbench.models.quantum.vqc import VQClassifier, resolve_chunk
@@ -207,9 +213,56 @@ def test_vqc_chunking_bounds_memory_and_preserves_results():
     full = m.predict_proba(X)
     m.chunk = 5  # force multiple chunks
     assert np.allclose(full, m.predict_proba(X), atol=1e-12)
-    # chunk sizing shrinks as the statevector grows
-    assert resolve_chunk(16, 6) < resolve_chunk(8, 4)
-    assert resolve_chunk(16, 6) >= 1
+    # chunk sizing shrinks as the statevector grows, on the host's own budget (the path
+    # production takes; its 1 GiB floor gives 21 against 4096) and on a fixed one. The override
+    # is cleared first: a runner imported by another test file leaves QGB_VQC_CHUNK set in the
+    # process, and the override returns one size for every circuit
+    monkeypatch.delenv("QGB_VQC_CHUNK", raising=False)
+    assert 1 <= resolve_chunk(16, 6) < resolve_chunk(8, 4)
+    assert 1 <= resolve_chunk(16, 6, budget_gib=2.0) < resolve_chunk(8, 4, budget_gib=2.0)
+    monkeypatch.setenv("QGB_VQC_CHUNK", "256")
+    assert resolve_chunk(16, 6) == resolve_chunk(8, 4) == 256
+
+
+def _vqc_fit(batch_inputs=None, chunk=None):
+    from qgridbench.models.quantum.vqc import VQClassifier
+
+    rng = np.random.default_rng(7)
+    X = rng.uniform(-np.pi, np.pi, (40, 4))
+    y = (X[:, 0] > 0).astype(int)
+    m = VQClassifier(4, depth=2, n_classes=2, batch_size=16, max_epochs=3, patience=5, seed=0)
+    if chunk is not None:
+        m.chunk = chunk
+    m.fit(X, y, X[:10], y[:10], batch_inputs=batch_inputs)
+    return X, m
+
+
+def test_vqc_fit_batch_inputs_identity_is_the_default_fit():
+    """The per-minibatch hook returning the rows themselves trains bit-identically to the default,
+    with and without chunking, so the hook adds nothing but the inputs it is given."""
+    for chunk in (None, 5):
+        X, ref = _vqc_fit(chunk=chunk)
+        _, m = _vqc_fit(batch_inputs=lambda b, X=X: X[b], chunk=chunk)
+        assert torch.equal(m.weights, ref.weights)
+        assert torch.equal(m.head_bias, ref.head_bias)
+        assert m.history == ref.history
+
+
+def test_vqc_fit_batch_inputs_is_what_the_step_sees():
+    """Each minibatch's indices reach the hook once per epoch; the returned rows are trained."""
+    seen = []
+    X, ref = _vqc_fit()
+
+    def hook(b):
+        seen.append(np.asarray(b).copy())
+        return np.clip(X[b] + 0.5, -np.pi, np.pi)
+
+    _, m = _vqc_fit(batch_inputs=hook)
+    assert len(seen) == 3 * 3  # 3 epochs x ceil(40 / 16) minibatches
+    assert sorted(np.concatenate(seen[:3]).tolist()) == list(range(40))
+    assert not torch.equal(m.weights, ref.weights)
+    with pytest.raises(ValueError, match="batch_inputs returned"):
+        _vqc_fit(batch_inputs=lambda b: X[b][:, :3])
 
 
 def test_noisy_kernel_reduces_to_fidelity_at_zero_noise():
@@ -253,3 +306,37 @@ def test_depolarizing_noise_contracts_the_kernel():
     assert purity[0] > 0.999
     assert purity[0] > purity[1] > purity[2], purity
     assert purity[2] < 0.9
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "qkernel_states_reference.npz"
+
+
+def test_compute_states_bit_identical_to_pre_refactor_reference():
+    """Reference states were written by the pre-`feature_map` code at commit 053f91a."""
+    ref = np.load(FIXTURE)
+    X = ref["X"]
+    assert np.array_equal(
+        compute_states(X, "angle_ry", 0.7932, dtype=np.complex128), ref["angle_ry"]
+    )
+    for es, nr in ((1.0, 2), (0.5, 2), (1.0, 1), (1.0, 3)):
+        got = compute_states(X, "zz", 0.7932, dtype=np.complex128, entangle_strength=es, n_reps=nr)
+        assert np.array_equal(got, ref[f"zz_e{es}_r{nr}"]), (es, nr)
+
+
+def test_unknown_encoding_fails_loud():
+    with pytest.raises(ValueError, match="unknown encoding"):
+        compute_states(np.zeros((1, 2)), "iqp")
+
+
+def test_feature_map_broadcast_batch_equals_kernel_states():
+    X = np.random.default_rng(3).uniform(-np.pi, np.pi, (5, 4))
+    dev = qml.device("default.qubit", wires=4)
+
+    @qml.qnode(dev, interface="torch")
+    def st(x):
+        feature_map(0.6 * x, "zz", 4)
+        return qml.state()
+
+    got = st(torch.as_tensor(X)).detach().numpy()
+    ref = compute_states(X, "zz", 0.6, dtype=np.complex128)
+    assert np.abs(got - ref).max() < 1e-10

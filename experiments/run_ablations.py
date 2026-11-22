@@ -10,8 +10,13 @@
   - bandwidth curve: dequantization <-> degeneracy axis, in and beyond the tuning box
   - bandwidth fragility: flip rate vs bandwidth — does accuracy-tuning cause fragility?
   - dequantization check: prediction agreement, tuned quantum SVM vs classical RBF SVM
+  - co-peak re-score (R4-17a, `--only copeak`): peakedness-aware reading of the archived
+    fragility arms, no refits
 
 Run:  python -m experiments.run_ablations --variant binary
+      --only data_eff --data-eff-vqc FILE takes the data-efficiency VQC's depth, learning rate,
+      batch and epochs from a tuned file instead of the hard-coded untuned 4 / 0.05 / 64 / 40;
+      --run-tag TAG suffixes the run directory and the data-efficiency file name.
 """
 
 from __future__ import annotations
@@ -22,6 +27,8 @@ import json
 import numpy as np
 from sklearn.svm import SVC
 
+from experiments.exports import Exports
+from experiments.tuned_file import run_name
 from qgridbench.eval.metrics import compute_all
 from qgridbench.models.classical.zoo import build, fit_model, stratified_cap
 from qgridbench.models.quantum.qkernel import (
@@ -44,11 +51,15 @@ from qgridbench.utils.seeding import set_all_seeds, spawn_rng
 log = get_logger(__name__)
 
 
-def _qk_f1(K_tr, K_te, ytr, yte, C=1.0):
+def _qk_proba(K_tr, K_te, ytr, C=1.0):
     clf = SVC(kernel="precomputed", C=C, class_weight="balanced").fit(K_tr, ytr)
     d = clf.decision_function(K_te)
     p1 = 1.0 / (1.0 + np.exp(-d))
-    return compute_all(yte, np.column_stack([1 - p1, p1]))["macro_f1"]
+    return np.column_stack([1 - p1, p1])
+
+
+def _qk_f1(K_tr, K_te, ytr, yte, C=1.0):
+    return compute_all(yte, _qk_proba(K_tr, K_te, ytr, C))["macro_f1"]
 
 
 def shot_study(reg, encoding, n_qubits, cap, shots_list, seeds):
@@ -797,7 +808,18 @@ def dequantization_check(variant, qubit_list, cfg_deq):
     return rows
 
 
-def data_efficiency(variant, n_qubits, sizes, seeds, cap):
+def _record(ex, seed, cond, model, proba, y, f1):
+    """Exports for the data-efficiency stage: every test-split prediction and its macro-F1."""
+    if ex is not None:
+        ex.predictions(seed, cond, model, proba, y, np.arange(len(y)))
+        ex.metric(seed, model, cond, "macro_f1", f1)
+
+
+# the data-efficiency curve's untuned VQC (study protocol §5): the default of --data-eff-vqc
+DATA_EFF_VQC = {"vqc_depth": 4, "vqc_lr": 0.05, "vqc_batch": 64, "vqc_epochs": 40}
+
+
+def data_efficiency(variant, n_qubits, sizes, seeds, cap, vqc_cfg=DATA_EFF_VQC, ex=None):
     """best classical (xgb, full) + qkernel(angle_ry) + vqc on subset sizes."""
     reg_full = prepare_regime(variant, "full", seed=0)
     reg_pca = prepare_regime(variant, "pca", n_components=n_qubits, seed=0)
@@ -823,7 +845,9 @@ def data_efficiency(variant, n_qubits, sizes, seeds, cap):
                 s,
             )
             fit_model("xgb", est, reg_full.X["train"][idx], reg_full.y["train"][idx])
-            f_xgb.append(compute_all(yte_full, est.predict_proba(reg_full.X["test"]))["macro_f1"])
+            proba = est.predict_proba(reg_full.X["test"])
+            f_xgb.append(compute_all(yte_full, proba)["macro_f1"])
+            _record(ex, s, f"size{size}", "xgb_full", proba, yte_full, f_xgb[-1])
         out["xgb_full"][str(size)] = {
             "mean": float(np.mean(f_xgb)),
             "std": float(np.std(f_xgb, ddof=1)),
@@ -834,32 +858,34 @@ def data_efficiency(variant, n_qubits, sizes, seeds, cap):
         Ate, yte = reg_pca.angles["test"], reg_pca.y["test"]
         K_tr = fidelity_kernel(compute_states(Atr, "angle_ry"), compute_states(Atr, "angle_ry"))
         K_te = fidelity_kernel(compute_states(Ate, "angle_ry"), compute_states(Atr, "angle_ry"))
-        out["qkernel_angle_ry"][str(size)] = {
-            "mean": float(_qk_f1(K_tr, K_te, ytr, yte)),
-            "std": 0.0,
-        }
+        proba = _qk_proba(K_tr, K_te, ytr)
+        f_qk = compute_all(yte, proba)["macro_f1"]
+        _record(ex, "deterministic", f"size{size}", "qkernel_angle_ry", proba, yte, f_qk)
+        out["qkernel_angle_ry"][str(size)] = {"mean": float(f_qk), "std": 0.0}
         # vqc
         f_vqc = []
         for s in seeds:
             set_all_seeds(s)
             m = VQClassifier(
                 n_qubits,
-                depth=4,
+                depth=vqc_cfg["vqc_depth"],
                 n_classes=len(np.unique(ytr)),
-                lr=0.05,
-                batch_size=64,
-                max_epochs=40,
+                lr=vqc_cfg["vqc_lr"],
+                batch_size=vqc_cfg["vqc_batch"],
+                max_epochs=vqc_cfg["vqc_epochs"],
                 patience=8,
                 seed=s,
             )
             m.fit(Atr, ytr, reg_pca.angles["val"][:500], reg_pca.y["val"][:500])
-            f_vqc.append(compute_all(yte, m.predict_proba(Ate))["macro_f1"])
+            proba = m.predict_proba(Ate)
+            f_vqc.append(compute_all(yte, proba)["macro_f1"])
+            _record(ex, s, f"size{size}", "vqc", proba, yte, f_vqc[-1])
         out["vqc"][str(size)] = {"mean": float(np.mean(f_vqc)), "std": float(np.std(f_vqc, ddof=1))}
         log.info("data-eff size %d done", size)
     return out
 
 
-def confusion_three_class(variant, regime, n_components, tuned_run, seeds, cap):
+def confusion_three_class(variant, regime, n_components, tuned_run, seeds, cap, on_seed=None):
     """Per-class metrics + confusion matrices for the three-class task (study protocol §8.8).
 
     The operationally load-bearing cell is natural-vs-attack: a grid operator's first question
@@ -871,6 +897,10 @@ def confusion_three_class(variant, regime, n_components, tuned_run, seeds, cap):
     Counts are summed over seeds (a per-seed mean of an integer matrix is not a confusion
     matrix); rates are normalised per true class so the 5.6/23.4/71.0 imbalance cannot make a
     rare-class error look small.
+
+    `on_seed(name, seed, est, X_test, y_test, pred)`, when given, sees each fitted model after
+    its test prediction (R4-20 exports per-seed metrics and predictions through it); it does not
+    touch the counts.
     """
     from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 
@@ -898,6 +928,8 @@ def confusion_three_class(variant, regime, n_components, tuned_run, seeds, cap):
             est = build(name, blk["best_params"], sd)
             fit_model(name, est, Xtr[cap_idx], ytr[cap_idx])
             pred = est.predict(Xte)
+            if on_seed is not None:
+                on_seed(name, sd, est, Xte, yte, pred)
             cm += confusion_matrix(yte, pred, labels=labels)
             p, r, f, _ = precision_recall_fscore_support(yte, pred, labels=labels, zero_division=0)
             prf.append(np.stack([p, r, f]))
@@ -1603,6 +1635,221 @@ def bandwidth_fragility_bounded(variant, cfg_frag, gate_slice=64, gate_tol=1e-10
     return {"rows": rows, "verdict": verdict}
 
 
+# ---- R4-17(a): peakedness-aware co-peak reading of the archived fragility arms --------------
+
+
+def peak_prominence(f, i):
+    """Prominence of f[i], with `scipy.signal.peak_prominences` semantics at any index.
+
+    Walk each way from i until a strictly higher value or the border; each side's base is the
+    lowest value walked, and the prominence is f[i] minus the higher base. A point with a higher
+    neighbour, or on the border, scores 0 (its own value is one of its bases).
+    """
+    f = np.asarray(f, dtype=float)
+    bases = []
+    for step in (-1, 1):
+        lo, j = f[i], i + step
+        while 0 <= j < len(f) and f[j] <= f[i]:
+            lo = min(lo, f[j])
+            j += step
+        bases.append(lo)
+    return float(f[i] - max(bases))
+
+
+def classify_copeak(f, i, tau):
+    """FLAT / CO-PEAK / MISALIGNED / TIED-TOP for operating point i of flip profile f.
+
+    FLAT: range < tau. CO-PEAK: prominence at i >= tau. MISALIGNED: a peak resolvably above
+    f[i] elsewhere (max - f[i] >= tau). TIED-TOP: f[i] within tau of the top but not a resolved
+    peak. Mutually exclusive in this order.
+    """
+    f = np.asarray(f, dtype=float)
+    rng_, prom, gap = float(f.max() - f.min()), peak_prominence(f, i), float(f.max() - f[i])
+    if rng_ < tau:
+        cls = "FLAT"
+    elif prom >= tau:
+        cls = "CO-PEAK"
+    elif gap >= tau:
+        cls = "MISALIGNED"
+    else:
+        cls = "TIED-TOP"
+    return {"class": cls, "range": rng_, "prominence": prom, "gap_to_top": gap}
+
+
+def _copeak_known_answers(tau):
+    """Blocking: the classifier must return the known answer on synthetic profiles."""
+    cases = [
+        ("flat", [0.39, 0.39, 0.40, 0.41], 1, "FLAT"),
+        ("interior_peak", [0.20, 0.30, 0.45, 0.30, 0.20], 2, "CO-PEAK"),
+        ("monotone_interior", [0.10, 0.20, 0.30, 0.40, 0.50], 2, "MISALIGNED"),
+        ("edge_top", [0.10, 0.20, 0.30, 0.40, 0.50], 4, "TIED-TOP"),
+    ]
+    out = {}
+    for name, f, i, want in cases:
+        got = classify_copeak(f, i, tau)
+        out[name] = {**got, "expected": want}
+        if got["class"] != want:
+            raise RuntimeError(f"copeak known-answer control {name}: {got['class']} != {want}")
+    if peak_prominence([0.1, 0.2, 0.3, 0.4, 0.5], 4) != 0.0:
+        raise RuntimeError("copeak known-answer control: an edge operating point must score 0")
+    return out
+
+
+def copeak_rescore(reg, cfg_frag, cfg_cp):
+    """R4-17(a): re-read every archived fragility profile with the peakedness-aware classes.
+
+    Archive-only: no model is fitted. Per arm, the operating point b* is the deployed arm's
+    validation-tuned bandwidth (nearest grid point) or, for the other arms, the test-subset
+    accuracy argmax as logged, with every cell within `argmax_tie` clean F1 of the best also
+    scored. Three cell scopes: RULED (the project's degeneracy rule: drop a cell whose clean
+    macro-F1 is within `degeneracy_margin` of the constant-predictor floor; the primary), FULL
+    (all cells) and P17C (drop the near-constant end only, P17c's practice).
+    """
+    from sklearn.metrics import f1_score
+
+    eps, tau = cfg_cp["eps"], float(cfg_cp["tau"])
+    known = _copeak_known_answers(tau)
+
+    ev = stratified_cap(reg.X["test"], reg.y["test"], cfg_frag["eval_subset"], seed=0)
+    y_ev = reg.y["test"][ev]
+    floor = float(f1_score(y_ev, np.ones_like(y_ev), average="macro", zero_division=0))
+    qk_bw = json.loads((REPO_ROOT / cfg_cp["tuned_params"]).read_text())["qk_bw"]
+    near_constant_quantum = min(cfg_frag["bandwidths"])
+
+    arms, legacy, draw_sd_ruled = {}, {}, []
+    for arm, spec in cfg_cp["arms"].items():
+        raw = json.loads((REPO_ROOT / "results" / "runs" / spec["path"]).read_text())
+        rows = raw["rows"] if isinstance(raw, dict) else raw
+        axis = spec.get("axis", "bandwidth")
+        groups = {}
+        for r in rows:
+            groups.setdefault(f"{arm}:{r[spec['group']]}" if "group" in spec else arm, []).append(r)
+        for name, rs in groups.items():
+            rs = sorted(rs, key=lambda r: r[axis])
+            grid = [float(r[axis]) for r in rs]
+            f1 = np.array([r["clean_macro_f1"] for r in rs])
+            flip = np.array([r["flip_rate"][eps]["mean"] for r in rs])
+            acc = int(np.argmax(f1))
+            legacy[name] = float(flip[acc] / flip.max())
+            if arm == "deployed_zz":
+                b_star = [int(np.argmin(np.abs(np.array(grid) - qk_bw)))]
+            else:
+                b_star = [acc] + [
+                    k
+                    for k in np.argsort(-f1)
+                    if k != acc and f1[acc] - f1[k] < float(cfg_cp["argmax_tie"])
+                ]
+            near_end = spec.get("near_constant_end", near_constant_quantum)
+            scopes = {
+                "RULED": np.abs(f1 - floor) > float(cfg_cp["degeneracy_margin"]),
+                "FULL": np.ones(len(rs), dtype=bool),
+                "P17C": np.array([g != float(near_end) for g in grid]),
+            }
+            draw_sd_ruled += [
+                float(np.std(r["flip_rate"][eps]["draws"], ddof=1))
+                for r, k in zip(rs, scopes["RULED"])
+                if k
+            ]
+            readings = {}
+            for scope, keep in scopes.items():
+                idx = np.flatnonzero(keep)
+                per_b = []
+                for b in b_star:
+                    if not keep[b]:
+                        per_b.append({"b_star": grid[b], "class": "B_STAR_EXCLUDED"})
+                        continue
+                    pos = int(np.flatnonzero(idx == b)[0])
+                    per_b.append({"b_star": grid[b], **classify_copeak(flip[idx], pos, tau)})
+                classes = sorted({p["class"] for p in per_b})
+                readings[scope] = {
+                    "cells_in_scope": [grid[k] for k in idx],
+                    "per_b_star": per_b,
+                    "class": classes[0] if len(classes) == 1 else "TIE(" + "|".join(classes) + ")",
+                }
+            arms[name] = {
+                "axis": axis,
+                "grid": grid,
+                "clean_macro_f1": f1.tolist(),
+                "flip_profile": flip.tolist(),
+                "b_star": [grid[b] for b in b_star],
+                "argmax_tie": len(b_star) > 1,
+                "legacy_ratio": legacy[name],
+                "readings": readings,
+            }
+
+    # ---- blocking: the legacy ratio recomputed here reproduces every archived ratio field ----
+    def _arch(path):
+        return json.loads((REPO_ROOT / "results" / "runs" / path).read_text())["verdict"]
+
+    sp = cfg_cp["arms"]
+    ent, rot = _arch(sp["p17b_entangle"]["path"]), _arch(sp["p17c_rotation"]["path"])
+    bnd, cls = _arch(sp["p17a_bounded"]["path"]), _arch(sp["classical_rbf"]["path"])
+    archived = {
+        **{f"p17b_entangle:{k}": v["ratio"] for k, v in ent["per_strength"].items()},
+        **{f"p17c_rotation:{k}": v["ratio"] for k, v in rot["per_reps"].items()},
+        "p17a_bounded": bnd["flip_ratio_at_optimum"],
+        "classical_rbf": cls["flip_at_accuracy_optimum"] / cls["max_flip"],
+        "deployed_zz": ent["per_strength"]["1.0"]["ratio"],  # s = 1 IS the deployed circuit
+    }
+    tol = float(cfg_cp["legacy_ratio_tol"])
+    ratio_ctrl = {
+        k: {"archived": a, "recomputed": legacy[k], "abs_dev": abs(a - legacy[k])}
+        for k, a in archived.items()
+    }
+    bad = {k: v for k, v in ratio_ctrl.items() if v["abs_dev"] > tol}
+    if bad:
+        raise RuntimeError(f"copeak legacy-ratio control failed: {bad}")
+
+    # ---- outcomes (design note branches) -----------------------------------------------------
+    primary = {k: v["readings"]["RULED"]["class"] for k, v in arms.items()}
+    logged_call = {k: legacy[k] == 1.0 for k in arms}
+    changed = {
+        k: {"logged_co_peak": logged_call[k], "ruled_class": primary[k]}
+        for k in arms
+        if logged_call[k] != (primary[k] == "CO-PEAK")
+    }
+    stationary = ["classical_rbf", "p17a_bounded", "p17c_rotation:1"]
+    nonstationary = ["deployed_zz", "p17c_rotation:3", "p17b_entangle:0.0"]
+    sep = {
+        "stationary": {k: primary[k] for k in stationary},
+        "nonstationary": {k: primary[k] for k in nonstationary},
+    }
+    sep["separates"] = not (set(sep["stationary"].values()) & set(sep["nonstationary"].values()))
+    deployed = primary["deployed_zz"]
+    outcomes = []
+    if deployed != "CO-PEAK":
+        outcomes.append("PAPER_FACING_CHANGE")
+    if not sep["separates"]:
+        outcomes.append("P17C_CHANGE")
+    if not outcomes and not changed and primary["p17b_entangle:0.0"] == "FLAT":
+        outcomes.append("NO_CHANGE")
+    if not outcomes:
+        outcomes.append("LOGGED_CALLS_CHANGE_NON_PAPER")
+
+    s = float(np.sqrt(np.mean(np.square(draw_sd_ruled))))
+    result = {
+        "constant_predictor_floor": floor,
+        "degeneracy_cut": floor + float(cfg_cp["degeneracy_margin"]),
+        "tau": tau,
+        "tau_recomputed_on_ruled_cells": 2 * np.sqrt(2) * s / np.sqrt(3),
+        "deployed_tuned_bandwidth": qk_bw,
+        "arms": arms,
+        "deployed_class": {k: v["class"] for k, v in arms["deployed_zz"]["readings"].items()},
+        "logged_calls_changed_under_ruled_scope": changed,
+        "p17c_separation_under_ruled_scope": sep,
+        "outcomes": outcomes,
+        "controls": {"known_answers": known, "legacy_ratio": ratio_ctrl, "pass": True},
+    }
+    log.info(
+        "copeak: floor %.4f (cut %.4f) | deployed RULED %s / FULL %s / P17C %s | outcomes %s",
+        floor,
+        result["degeneracy_cut"],
+        *result["deployed_class"].values(),
+        outcomes,
+    )
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default="binary")
@@ -1619,13 +1866,20 @@ def main():
         help="run dir supplying tuned three-class PCA params for --only confusion",
     )
     ap.add_argument(
+        "--data-eff-vqc",
+        default=None,
+        help="tuned-parameter JSON (repo-relative) supplying the data-efficiency VQC's "
+        "configuration (default: the hard-coded untuned one, DATA_EFF_VQC)",
+    )
+    ap.add_argument("--run-tag", default=None, help="suffix for the run dir and data-eff file")
+    ap.add_argument(
         "--only",
         nargs="*",
         default=None,
         help=(
             "subset of {shots,sweep,depth,data_eff,noise_model,cap_cost,barren,entangle,"
             "geometry,relabel,bandwidth,fragility,fragility_classical,rotation,mechanism,"
-            "fragility_bounded,confusion,dequant}"
+            "fragility_bounded,confusion,dequant,copeak}"
         ),
     )
     args = ap.parse_args()
@@ -1638,7 +1892,15 @@ def main():
     # noise_model is opt-in: density matrices are 4**d per sample
 
     reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
-    with RunDir(f"ablations_{args.variant}_q{args.qubits}", config=vars(args), seeds=seeds) as run:
+    vqc_cfg = DATA_EFF_VQC
+    if args.data_eff_vqc:
+        tuned = json.loads((REPO_ROOT / args.data_eff_vqc).read_text())
+        vqc_cfg = {k: tuned[k] for k in DATA_EFF_VQC}
+    with RunDir(
+        run_name(f"ablations_{args.variant}_q{args.qubits}", args.run_tag),
+        config={**vars(args), "data_eff_vqc_config": vqc_cfg},
+        seeds=seeds,
+    ) as run:
         if "shots" in do:
             run.write_json(
                 "shot_study.json",
@@ -1732,6 +1994,15 @@ def main():
                 "entanglement_isolation.json",
                 entanglement_isolation(args.variant, cfg_q["ablations"]["bandwidth_fragility"]),
             )
+        if "copeak" in do:
+            run.write_json(
+                "copeak_rescore.json",
+                copeak_rescore(
+                    reg,
+                    cfg_q["ablations"]["bandwidth_fragility"],
+                    cfg_q["ablations"]["copeak_rescore"],
+                ),
+            )
         if "fragility_bounded" in do:
             run.write_json(
                 "bandwidth_fragility_bounded.json",
@@ -1749,12 +2020,21 @@ def main():
                 confusion_three_class("triple", "pca", args.qubits, args.tuned_pca, seeds, cap),
             )
         if "data_eff" in do:
+            ex = Exports(args.variant, args.data_eff_vqc)
+            ex.extra["data_eff_vqc_config"] = vqc_cfg
             run.write_json(
-                "data_efficiency.json",
+                run_name("data_efficiency", args.run_tag) + ".json",
                 data_efficiency(
-                    args.variant, args.qubits, cfg_c["data_efficiency"]["sizes"], seeds, cap
+                    args.variant,
+                    args.qubits,
+                    cfg_c["data_efficiency"]["sizes"],
+                    seeds,
+                    cap,
+                    vqc_cfg,
+                    ex,
                 ),
             )
+            ex.write(run.path)
         print(f"-> {run.path}")
 
 

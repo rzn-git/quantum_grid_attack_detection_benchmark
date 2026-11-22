@@ -19,6 +19,8 @@ subsets) as run_adversarial.py, so numbers are directly comparable. Outputs a
 run dir under results/; make_report picks up the JSON to regenerate exhibits.
 
 Run:  python -m experiments.run_whitebox_qsvm --variant binary --qubits 8
+      [--vqc-params FILE] takes only the VQC keys from a second tuned file;
+      [--run-tag TAG] suffixes the run directory name.
 """
 
 from __future__ import annotations
@@ -28,8 +30,11 @@ import json
 
 import numpy as np
 
+from experiments.exports import Exports
+
 # reuse the exact zoo the robustness table was built from
 from experiments.run_adversarial import FittedZoo, _f1, _svc_on_kernel, _svc_proba
+from experiments.tuned_file import VQC_KEYS, run_name, with_vqc_from
 from qgridbench.attacks.evasion import fgsm, pgd
 from qgridbench.attacks.gradients import GradProvider, mlp_loss_input_grad
 from qgridbench.attacks.qsvm_whitebox import QSVMWhiteBox, assert_matches_reference
@@ -41,7 +46,7 @@ from qgridbench.models.classical.zoo import (
     stratified_cap,
 )
 from qgridbench.models.quantum.qkernel import compute_states, fidelity_kernel
-from qgridbench.protocol import kernel_subset, prepare_regime
+from qgridbench.protocol import best_params_path, kernel_subset, prepare_regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml
 from qgridbench.utils.seeding import set_all_seeds, spawn_rng
 
@@ -52,22 +57,48 @@ def _macro_f1_curve(predict_proba, X, y, X_adv_by_eps):
     return {str(e): _f1(y, predict_proba(Xa)) for e, Xa in X_adv_by_eps.items()}
 
 
-def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attack_seeds=(0,)):
+def p5a_whitebox_qsvm(
+    reg,
+    args,
+    cfg_adv,
+    best_params,
+    subset_cap,
+    seed=0,
+    attack_seeds=(0,),
+    ex: Exports | None = None,
+):
     """Targeted white-box PGD/FGSM against the fidelity-kernel QSVM.
 
     The QSVM is deterministic given its fixed training subset (the paper's stated
     protocol), so the only stochastic element is PGD's random start. Spread is
     therefore reported over ATTACK seeds, with the model held fixed — stated as
     such wherever the number appears.
+
+    `ex` only records (each prediction, macro-F1 and attacked set, keyed by attack seed, with
+    FGSM under "fgsm" because it has no random start); no draw or metric depends on it.
     """
     zoo = FittedZoo(reg, args.encoding, args.qubits, seed, subset_cap, best_params)
     svc = zoo.models["qsvm"]
     bw = best_params.get("qk_bw", 1.0)
     wb = QSVMWhiteBox(svc, zoo._states_tr, zoo._angle, args.encoding, bw)
 
+    # --exact-eval: score the QSVM through the exact complex128 Gram, the precision the attack is
+    # crafted at, and gate with deployed_tol=None, which the gate's contract allows for exactly
+    # this kind of caller. It exists for a tuned model whose complex64 path misses the deployed
+    # bound (gas_binary_slog at C 913: decision log 2026-11-21, the gate incident and its
+    # amendment). The default is the deployed path, so no existing number moves.
+    exact_eval = getattr(args, "exact_eval", False)
+
     # NUMERIC GATE on real data before any reported number depends on this path
     gate_idx = stratified_cap(reg.X["test"], reg.y["test"], 40, seed=0)
-    gate = assert_matches_reference(wb, svc, zoo._states_tr, zoo._angle, reg.X["test"][gate_idx])
+    gate = assert_matches_reference(
+        wb,
+        svc,
+        zoo._states_tr,
+        zoo._angle,
+        reg.X["test"][gate_idx],
+        **({"deployed_tol": None} if exact_eval else {}),
+    )
     log.info(
         "P5a gate: forward(exact) %.2e, forward(deployed) %.2e, grad %.2e",
         gate["forward_rel_err"],
@@ -81,10 +112,36 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
     eps_grid = cfg_adv["evasion"]["epsilons"]
     pgd_cfg = cfg_adv["evasion"]["pgd"]
 
-    def qsvm_proba(X):
-        return zoo.predict_proba("qsvm", X)
+    # --exact-eval only: every set the QSVM is scored on is also scored on the deployed complex64
+    # path, and the distance between the two readings is stored (never used for a reported number)
+    path_check: list[dict] = []
 
-    clean = _f1(yte, qsvm_proba(Xte))
+    def qsvm_proba(X):
+        deployed = zoo.predict_proba("qsvm", X)
+        if not exact_eval:
+            return deployed
+        states = compute_states(zoo._angle.transform(X), args.encoding, bandwidth=bw)
+        p = _svc_proba(svc, fidelity_kernel(states, zoo._states_tr, exact=True), zoo.n_classes)
+        path_check.append(
+            {
+                "n_predictions_differ": int((p.argmax(axis=1) != deployed.argmax(axis=1)).sum()),
+                "macro_f1_exact": _f1(yte, p),
+                "macro_f1_deployed": _f1(yte, deployed),
+            }
+        )
+        return p
+
+    def scored(seed_key, cond, source, X, model, p):
+        """Macro-F1 of `p`; with `ex`, also records the prediction, the metric and the input."""
+        f = _f1(yte, p)
+        if ex is not None:
+            if cond != "clean":
+                ex.crafted_input(seed_key, cond, source, X)
+            ex.predictions(seed_key, cond, model, p, yte, ev_idx)
+            ex.metric(seed_key, model, cond, "macro_f1", f)
+        return f
+
+    clean = scored(seed, "clean", "", Xte, "qsvm", qsvm_proba(Xte))
     half = 0.5 if 0.5 in eps_grid else max(eps_grid)
 
     # per-attack-seed curves -> mean/std per epsilon
@@ -101,9 +158,9 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
     def rbf_proba(X):
         return zoo.predict_proba("rbf_svm", X)
 
-    clean_rbf = _f1(yte, rbf_proba(Xte))
+    clean_rbf = scored(seed, "clean", "", Xte, "rbf_svm", rbf_proba(Xte))
     for a_seed in attack_seeds:
-        rng = spawn_rng(a_seed, "p5a")
+        rng = spawn_rng(a_seed, ex.stream("p5a") if ex is not None else "p5a")
         for e in eps_grid:
             Xa = pgd(
                 wb,
@@ -115,7 +172,9 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
                 step_frac=pgd_cfg["step_frac"],
                 rng=rng,
             )
-            per_seed_pgd[str(e)].append(_f1(yte, qsvm_proba(Xa)))
+            per_seed_pgd[str(e)].append(
+                scored(a_seed, f"pgd@{e}", "qsvm", Xa, "qsvm", qsvm_proba(Xa))
+            )
             Xr = pgd(
                 gp_rbf,
                 Xte,
@@ -126,7 +185,9 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
                 step_frac=pgd_cfg["step_frac"],
                 rng=rng,
             )
-            per_seed_rbf[str(e)].append(_f1(yte, rbf_proba(Xr)))
+            per_seed_rbf[str(e)].append(
+                scored(a_seed, f"pgd_rbf@{e}", "rbf_svm", Xr, "rbf_svm", rbf_proba(Xr))
+            )
         X_tr = pgd(
             gp_mlp,
             Xte,
@@ -137,9 +198,14 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
             step_frac=pgd_cfg["step_frac"],
             rng=rng,
         )
-        per_seed_transfer.append(_f1(yte, qsvm_proba(X_tr)))
+        per_seed_transfer.append(
+            scored(a_seed, f"transfer_mlp@{half}", "mlp", X_tr, "qsvm", qsvm_proba(X_tr))
+        )
     for e in eps_grid:  # FGSM has no random start
-        per_seed_fgsm[str(e)].append(_f1(yte, qsvm_proba(fgsm(wb, Xte, yte, e, scale))))
+        Xf = fgsm(wb, Xte, yte, e, scale)
+        per_seed_fgsm[str(e)].append(
+            scored("fgsm", f"fgsm@{e}", "qsvm", Xf, "qsvm", qsvm_proba(Xf))
+        )
 
     def agg(d):
         return {
@@ -171,7 +237,22 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
         half,
         rbf_half["mean"] / clean_rbf,
     )
+    exact_block = {}
+    if exact_eval:
+        exact_block = {
+            "qsvm_evaluation_path": "exact complex128",
+            "deployed_path_check": {
+                "n_sets": len(path_check),
+                "n_rows_per_set": int(len(yte)),
+                "max_predictions_differ": max(c["n_predictions_differ"] for c in path_check),
+                "max_abs_macro_f1_diff": max(
+                    abs(c["macro_f1_exact"] - c["macro_f1_deployed"]) for c in path_check
+                ),
+                "sets": path_check,
+            },
+        }
     return {
+        **exact_block,
         "clean_f1": clean,
         "pgd_curve": pgd_curve,
         "fgsm_curve": fgsm_curve,
@@ -197,7 +278,7 @@ def p5a_whitebox_qsvm(reg, args, cfg_adv, best_params, subset_cap, seed=0, attac
     }
 
 
-def p7b_kernel_exhaustion(reg, args, cfg_adv, best_params, subset_cap, seed=0):
+def p7b_kernel_exhaustion(reg, args, cfg_adv, best_params, subset_cap, seed=0, ex=None):
     """Why the two kernels diverge: the classical one exhausts, the quantum one does not.
 
     Local sensitivity does NOT explain the gap (P7a, killed at its pre-registered line:
@@ -293,7 +374,7 @@ def p7b_kernel_exhaustion(reg, args, cfg_adv, best_params, subset_cap, seed=0):
 
     sens = {}
     for nm, gfn in (("qsvm", grad_f_qsvm), ("rbf_svm", grad_f_rbf), ("mlp", grad_f_mlp)):
-        p = zoo.predict_proba(nm, X)[:, 1]
+        p = zoo.clean_proba(nm, X, y)[:, 1]
         s_dec = (np.abs(gfn(X)) * scale).sum(axis=1)
         sens[nm] = {
             "median_sensitivity_decision": float(np.median(s_dec)),
@@ -350,8 +431,17 @@ def p7b_kernel_exhaustion(reg, args, cfg_adv, best_params, subset_cap, seed=0):
                 )
             )
             K, f = k_rows(name, Xa), np.abs(decision(name, Xa))
-            p = zoo.predict_proba(name, Xa)[:, 1]
-            f1 = _f1(y, zoo.predict_proba(name, Xa))
+            proba = zoo.predict_proba(name, Xa)
+            p = proba[:, 1]
+            f1 = _f1(y, proba)
+            if ex is not None:
+                cond = "clean" if e == 0.0 else f"pgd_self@{e}"
+                if e:
+                    ex.stream(f"p7b_{name}_{e}")
+                    ex.crafted_input(seed, cond, name, Xa)
+                ex.predictions(seed, cond, name, proba, y, idx)
+                ex.metric(seed, name, cond, "macro_f1", f1)
+                ex.metric(seed, name, cond, "kernel_mass_ratio", K.mean() / K0.mean())
             rows[str(e)] = {
                 "kernel_mass_ratio": float(K.mean() / K0.mean()),
                 "decision_magnitude_ratio": float(f.mean() / f0.mean()),
@@ -376,7 +466,7 @@ def p7b_kernel_exhaustion(reg, args, cfg_adv, best_params, subset_cap, seed=0):
 
 
 def p8a_lengthscale_control(
-    reg, cfg_adv, best_params, subset_cap, seed=0, gamma_mults=None, attack_seeds=(0,)
+    reg, cfg_adv, best_params, subset_cap, seed=0, gamma_mults=None, attack_seeds=(0,), ex=None
 ):
     """Is exhaustion a CLASSICAL property, or a length-scale property? (P8a)
 
@@ -423,9 +513,11 @@ def p8a_lengthscale_control(
             # with the model held fixed; at e=0 there is no attack, hence no spread, and
             # the clean row's std is 0 by construction rather than by measurement.
             reps = [X] if e == 0.0 else []
+            rep_seeds = [seed] if e == 0.0 else list(attack_seeds)
             for a_seed in attack_seeds:
                 if e == 0.0:
                     break
+                stream = f"p8a_{mult}_{e}"
                 reps.append(
                     pgd(
                         gp,
@@ -435,7 +527,7 @@ def p8a_lengthscale_control(
                         scale,
                         n_steps=pgd_cfg["n_steps"],
                         step_frac=pgd_cfg["step_frac"],
-                        rng=spawn_rng(a_seed, f"p8a_{mult}_{e}"),
+                        rng=spawn_rng(a_seed, ex.stream(stream) if ex is not None else stream),
                     )
                 )
             stats = {
@@ -444,7 +536,7 @@ def p8a_lengthscale_control(
                 "proba_std": [],
                 "macro_f1": [],
             }
-            for Xa in reps:
+            for a_seed, Xa in zip(rep_seeds, reps, strict=True):
                 proba, _ = predict_proba_timed(est, Xa)
                 stats["kernel_mass_ratio"].append(float(k_rows(Xa).mean() / K0.mean()))
                 stats["decision_magnitude_ratio"].append(
@@ -452,6 +544,13 @@ def p8a_lengthscale_control(
                 )
                 stats["proba_std"].append(float(proba[:, 1].std()))
                 stats["macro_f1"].append(_f1(y, proba))
+                if ex is not None:
+                    cond = f"gamma_x{mult}|" + ("clean" if e == 0.0 else f"pgd_self@{e}")
+                    if e != 0.0:
+                        ex.crafted_input(a_seed, cond, "rbf_svm", Xa)
+                    ex.predictions(a_seed, cond, "rbf_svm", proba, y, idx)
+                    for k in ("macro_f1", "kernel_mass_ratio", "decision_magnitude_ratio"):
+                        ex.metric(a_seed, "rbf_svm", cond, k, stats[k][-1])
             rows[str(e)] = {k: float(np.mean(v)) for k, v in stats.items()}
             rows[str(e)]["macro_f1_std"] = (
                 float(np.std(stats["macro_f1"], ddof=1)) if len(reps) > 1 else 0.0
@@ -717,8 +816,22 @@ def _end_state(dec_clean, dec_adv, y, floor):
     }
 
 
+def _sigmoid_proba(dec: np.ndarray) -> np.ndarray:
+    """[P(0), P(1)] from an SVM margin, the zoo's convention for precomputed-kernel models."""
+    p1 = 1.0 / (1.0 + np.exp(-dec))
+    return np.column_stack([1 - p1, p1])
+
+
 def p11c_objective_and_regularization(
-    reg, args, cfg_adv, cfg_q, best_params, subset_cap, seed=0, c_grid=(1.0, 10.0, 100.0)
+    reg,
+    args,
+    cfg_adv,
+    cfg_q,
+    best_params,
+    subset_cap,
+    seed=0,
+    c_grid=(1.0, 10.0, 100.0),
+    ex=None,
 ):
     """Does the fidelity kernel's non-decay belong to the ENCODING, or to the attack objective
     and the fit? (P11c + P11d, pre-registered 2026-08-15T05:40Z and 06:20Z.)
@@ -836,24 +949,30 @@ def p11c_objective_and_regularization(
         }
         for e in radii:
             r = np.random.default_rng(1)
-            mass_obj = q_mass(
-                _mass_descent(
-                    lambda Z, w=wb: _qsvm_mass_grad(w, Z), X, e, scale, r, n_steps, step_frac
-                )
+            X_mass = _mass_descent(
+                lambda Z, w=wb: _qsvm_mass_grad(w, Z), X, e, scale, r, n_steps, step_frac
             )
-            loss_obj = q_mass(
-                pgd(
-                    wb,
-                    X,
-                    y,
-                    e,
-                    scale,
-                    n_steps=n_steps,
-                    step_frac=step_frac,
-                    rng=np.random.default_rng(1),
-                )
+            X_loss = pgd(
+                wb,
+                X,
+                y,
+                e,
+                scale,
+                n_steps=n_steps,
+                step_frac=step_frac,
+                rng=np.random.default_rng(1),
             )
-            rnd = q_mass(X + np.random.default_rng(2).uniform(-1, 1, X.shape) * e * scale)
+            X_rnd = X + np.random.default_rng(2).uniform(-1, 1, X.shape) * e * scale
+            mass_obj, loss_obj, rnd = q_mass(X_mass), q_mass(X_loss), q_mass(X_rnd)
+            if ex is not None:
+                for kind, Xk, val, s_ in (
+                    ("mass_objective", X_mass, mass_obj, 1),
+                    ("loss_objective", X_loss, loss_obj, 1),
+                    ("random", X_rnd, rnd, 2),
+                ):
+                    cond = f"partA_bw{bw}|{kind}@{e}"
+                    ex.crafted_input(s_, cond, "random" if kind == "random" else "qsvm", Xk)
+                    ex.metric(s_, "qsvm", cond, "mass_ratio", val / m0)
             cell["curve"][str(e)] = {
                 "mass_objective": mass_obj / m0,
                 "loss_objective": loss_obj / m0,
@@ -892,26 +1011,34 @@ def p11c_objective_and_regularization(
         K0 = full_gram(X)
         dec0 = svc.decision_function(K0)
         clean = _end_state(dec0, dec0, y, floor)
+        if ex is not None:
+            ex.predictions(0, f"partB_C{C}|clean", "qsvm", _sigmoid_proba(dec0), y, idx)
         per_seed = []
         for s in (1, 2, 3):  # the end-state read is seed-sensitive; 3 attack seeds, spread reported
-            Ka = full_gram(
-                _mass_descent(
-                    lambda Z, w=wb: _qsvm_mass_grad(w, Z),
-                    X,
-                    paper_budget,
-                    scale,
-                    np.random.default_rng(s),
-                    n_steps,
-                    step_frac,
-                )
+            X_adv = _mass_descent(
+                lambda Z, w=wb: _qsvm_mass_grad(w, Z),
+                X,
+                paper_budget,
+                scale,
+                np.random.default_rng(s),
+                n_steps,
+                step_frac,
             )
+            Ka = full_gram(X_adv)
+            dec_a = svc.decision_function(Ka)
             per_seed.append(
                 {
                     "seed": s,
                     "mass_ratio": float(Ka[:, sup].mean() / K0[:, sup].mean()),
-                    **_end_state(dec0, svc.decision_function(Ka), y, floor),
+                    **_end_state(dec0, dec_a, y, floor),
                 }
             )
+            if ex is not None:
+                cond = f"partB_C{C}|mass_descent@{paper_budget}"
+                ex.crafted_input(s, cond, "qsvm", X_adv)
+                ex.predictions(s, cond, "qsvm", _sigmoid_proba(dec_a), y, idx)
+                for k in ("mass_ratio", "dec_spread_ratio", "modal_frac", "f1_minus_floor"):
+                    ex.metric(s, "qsvm", cond, k, per_seed[-1][k])
         agg = {
             k: {
                 "mean": float(np.mean([p[k] for p in per_seed])),
@@ -950,6 +1077,187 @@ def p11c_objective_and_regularization(
             agg["f1_minus_floor"]["mean"],
             out["part_b_regularization"][str(C)]["disabled"],
         )
+    return out
+
+
+P11E_KINDS = ("loss", "mass", "random")
+P11E_KEYS = ("mass_ratio", "dec_spread_ratio", "modal_frac", "macro_f1", "f1_minus_floor")
+
+
+def _union_f1(y, wrong_by_seed):
+    """Macro-F1 when a row counts as evaded if any of its attacked predictions is wrong."""
+    scores = [_f1(y, np.eye(2)[np.where(w, 1 - y, y)]) for w in wrong_by_seed.values()]
+    return {
+        "mean": float(np.mean(scores)),
+        "std": float(np.std(scores, ddof=1)) if len(scores) > 1 else 0.0,
+        "per_start": scores,
+    }
+
+
+def p11e_regularization_radii(
+    reg,
+    args,
+    cfg_adv,
+    best_params,
+    subset_cap,
+    seed=0,
+    c_grid=(1.0, 10.0, 100.0),
+    attack_seeds=(0,),
+    c_index=None,
+    ex=None,
+):
+    """The regularization sweep of P11c part B read inside the ball (registered 2026-11-20).
+
+    Part B read each C at one radius, the full budget, under the distance-seeking objective.
+    An attacker bounded by that radius may use any smaller one and may ascend loss instead, so
+    this stage attacks the same fits (tuned bandwidth, same training subset, same test rows)
+    at every grid radius under both objectives, over the attack starts.
+
+    Streams are chosen so two stored runs anchor it. Mass descent starts from
+    np.random.default_rng(s): at the full budget and s in 1-3 that is part B. Loss ascent
+    starts from spawn_rng(s, "p9a_<bandwidth>_<radius>"): at the tuned C and s in 0-2 that is
+    the tuned-bandwidth cell of P9a. The random control (same radius, no gradient) draws from
+    spawn_rng(s, "p11e_random_<radius>").
+
+    Per C the block stores one curve per objective (`per_c_loss`, `per_c_mass`,
+    `per_c_random`: radius -> mean and per-start readings) and, in `per_c`, the fit, the
+    numeric gate and the reading of an attacker who picks the radius per input. `c_index`
+    restricts the run to one value of the sorted grid, so the values run side by side, one
+    process each.
+    """
+    pgd_cfg = cfg_adv["evasion"]["pgd"]
+    n_steps, step_frac = pgd_cfg["n_steps"], pgd_cfg["step_frac"]
+    radii = sorted(set(cfg_adv["evasion"]["epsilons"]) | {1.0, 2.0})
+    sub = kernel_subset(reg, subset_cap, seed=0)
+    Xtr, ytr = reg.X["train"][sub], reg.y["train"][sub]
+    angle, scale = reg.angle_scaler, np.asarray(reg.feature_scale, dtype=np.float64)
+    idx = stratified_cap(reg.X["test"], reg.y["test"], cfg_adv["blackbox"]["eval_subset"] * 2, 0)
+    X, y = reg.X["test"][idx], reg.y["test"][idx]
+    maj = int(np.round(y.mean()))
+    floor = _f1(y, np.column_stack([1 - np.full(len(y), maj), np.full(len(y), maj)]).astype(float))
+    C_tuned, bw = float(best_params["qk_C"]), float(best_params["qk_bw"])
+    grid = sorted({*(float(c) for c in c_grid), C_tuned})
+    cells = grid if c_index is None else [grid[c_index]]
+
+    set_all_seeds(seed)
+    st = compute_states(angle.transform(Xtr), args.encoding, bandwidth=bw)
+    Ktr = fidelity_kernel(st, st)
+
+    def gram(Z):
+        return fidelity_kernel(
+            compute_states(angle.transform(Z), args.encoding, bw), st, exact=True
+        )
+
+    K0 = gram(X)
+    out = {
+        "constant_predictor_floor": floor,
+        "n_eval": int(len(idx)),
+        "budget_sigma": max(radii),
+        "radii": radii,
+        "n_steps": n_steps,
+        "tuned_bandwidth": bw,
+        "tuned_C": C_tuned,
+        "c_grid": grid,
+        "attack_seeds": [int(s) for s in attack_seeds],
+        "per_c": {},
+        **{f"per_c_{kind}": {} for kind in P11E_KINDS},
+    }
+    for C in cells:
+        svc = _svc_on_kernel(2, C).fit(Ktr, ytr)
+        wb = QSVMWhiteBox(svc, st, angle, args.encoding, bw)
+        # each C is a new decision function, gated before its numbers are read (exact Gram,
+        # the path this stage evaluates through, as in P9a)
+        gate = assert_matches_reference(wb, svc, st, angle, X[:40], deployed_tol=None)
+        duals, sup = svc.dual_coef_[0], svc.support_
+        bound = C * float(np.max(getattr(svc, "class_weight_", np.ones(2))))
+        dec0 = svc.decision_function(K0)
+        clean = _end_state(dec0, dec0, y, floor)
+        if ex is not None:
+            ex.predictions(0, f"C{C}|clean", "qsvm", _sigmoid_proba(dec0), y, idx)
+
+        def craft(kind, e, s, w=wb):
+            if kind == "loss":
+                return pgd(
+                    w,
+                    X,
+                    y,
+                    e,
+                    scale,
+                    n_steps=n_steps,
+                    step_frac=step_frac,
+                    rng=spawn_rng(s, f"p9a_{bw}_{e}"),
+                )
+            if kind == "mass":
+                return _mass_descent(
+                    lambda Z: _qsvm_mass_grad(w, Z),
+                    X,
+                    e,
+                    scale,
+                    np.random.default_rng(s),
+                    n_steps,
+                    step_frac,
+                )
+            return X + spawn_rng(s, f"p11e_random_{e}").uniform(-1.0, 1.0, X.shape) * e * scale
+
+        curves = {kind: {} for kind in P11E_KINDS}
+        wrong = {
+            kind: {int(s): np.zeros(len(y), dtype=bool) for s in attack_seeds}
+            for kind in ("loss", "mass")
+        }
+        for e in radii:
+            for kind in P11E_KINDS:
+                rows = []
+                for s in attack_seeds:
+                    X_adv = craft(kind, e, s)
+                    Ka = gram(X_adv)
+                    dec_a = svc.decision_function(Ka)
+                    rows.append(
+                        {
+                            "seed": int(s),
+                            "mass_ratio": float(Ka[:, sup].mean() / K0[:, sup].mean()),
+                            **_end_state(dec0, dec_a, y, floor),
+                        }
+                    )
+                    if kind in wrong:
+                        wrong[kind][int(s)] |= (dec_a > 0).astype(int) != y
+                    if ex is not None:
+                        cond = f"C{C}|{kind}@{e}"
+                        ex.crafted_input(s, cond, "random" if kind == "random" else "qsvm", X_adv)
+                        ex.predictions(s, cond, "qsvm", _sigmoid_proba(dec_a), y, idx)
+                        for k in P11E_KEYS:
+                            ex.metric(s, "qsvm", cond, k, rows[-1][k])
+                f1s = [r["macro_f1"] for r in rows]
+                curves[kind][str(e)] = {
+                    **{k: float(np.mean([r[k] for r in rows])) for k in P11E_KEYS},
+                    "macro_f1_std": float(np.std(f1s, ddof=1)) if len(f1s) > 1 else 0.0,
+                    "per_seed": rows,
+                }
+            log.info(
+                "P11e C %.4g at %.2f sigma: F1 minus floor, loss ascent %+.3f, mass descent "
+                "%+.3f, random %+.3f",
+                C,
+                e,
+                *(curves[kind][str(e)]["f1_minus_floor"] for kind in P11E_KINDS),
+            )
+        for kind in P11E_KINDS:
+            out[f"per_c_{kind}"][str(C)] = {"curve": curves[kind]}
+        either = {s: wrong["loss"][s] | wrong["mass"][s] for s in wrong["loss"]}
+        out["per_c"][str(C)] = {
+            "clean_macro_f1": clean["macro_f1"],
+            "clean_f1_minus_floor": clean["f1_minus_floor"],
+            "clean_modal_frac": clean["modal_frac"],
+            "degenerate": bool(clean["f1_minus_floor"] < 0.05),
+            "n_support": int(len(duals)),
+            "max_abs_dual": float(np.abs(duals).max()),
+            "dual_bound": bound,
+            "frac_duals_pinned": float(np.mean(np.abs(np.abs(duals) - bound) < 1e-6 * bound)),
+            "numeric_gate": gate,
+            "per_input_union": {
+                "loss": _union_f1(y, wrong["loss"]),
+                "mass": _union_f1(y, wrong["mass"]),
+                "either": _union_f1(y, either),
+            },
+        }
     return out
 
 
@@ -1142,7 +1450,7 @@ def p15a_transfer_alignment(reg, args, cfg_adv, best_params, subset_cap, seed=0)
         "rbf_svm": GradProvider(zoo.models["rbf_svm"], "rbf_svm"),
         "qsvm": wb,
     }
-    clean = {t: _f1(y, zoo.predict_proba(t, X)) for t in grads}
+    clean = {t: _f1(y, zoo.clean_proba(t, X, y)) for t in grads}
     G = {t: g(X, y) for t, g in grads.items()}  # gradients at the CLEAN points, where the
     # attacker computes its step
     rng_seed = 11
@@ -1243,18 +1551,42 @@ def p15a_transfer_alignment(reg, args, cfg_adv, best_params, subset_cap, seed=0)
     return out
 
 
+def _write_stage_exports(run_dir, stage: str, ex: Exports) -> None:
+    """One stage's exports in its own subdirectory, so stages in one run never collide."""
+    d = run_dir / f"exports_{stage}"
+    d.mkdir(exist_ok=True)
+    ex.write(d)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default="binary")
     ap.add_argument("--qubits", type=int, default=8)
     ap.add_argument("--encoding", default="zz")  # the robustness-table QSVM config
-    ap.add_argument("--best-params", default="results/adv_best_params_binary_q8.json")
+    ap.add_argument(
+        "--best-params",
+        default=None,
+        help="tuned-parameter JSON; default: the variant's own file (protocol.best_params_path)",
+    )
+    ap.add_argument(
+        "--vqc-params",
+        default=None,
+        help="tuned-parameter JSON whose VQC keys replace --best-params' (default: none)",
+    )
+    ap.add_argument("--run-tag", default=None, help="suffix for the run directory name")
     ap.add_argument(
         "--full-mlp-run",
         default="results/runs/20260813T081418Z_classical_binary_full",
         help="classical full-feature run dir supplying the tuned MLP params for P6a",
     )
     ap.add_argument("--only", nargs="*", default=["p5a", "p6a", "p7b"])
+    ap.add_argument(
+        "--exact-eval",
+        action="store_true",
+        help="P5a: score the QSVM through the exact complex128 Gram, the precision its attack is "
+        "crafted at, and store how far the deployed complex64 path sits from it (default: the "
+        "deployed path, as every published run).",
+    )
     ap.add_argument(
         "--gamma-mults",
         type=float,
@@ -1272,6 +1604,13 @@ def main():
         "(the tuned C is always appended).",
     )
     ap.add_argument(
+        "--c-index",
+        type=int,
+        default=None,
+        help="P11e: run one value of the sorted regularization grid (default: all), so the "
+        "values run side by side, one process each.",
+    )
+    ap.add_argument(
         "--seeds",
         type=int,
         nargs="*",
@@ -1285,25 +1624,42 @@ def main():
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
     subset_cap = cfg_q["qkernel"]["subset_cap"]
+    args.best_params = (
+        args.best_params
+        or best_params_path(args.variant, args.qubits).relative_to(REPO_ROOT).as_posix()
+    )
     best_params = json.loads((REPO_ROOT / args.best_params).read_text())
+    if args.vqc_params:
+        best_params = with_vqc_from(
+            best_params, json.loads((REPO_ROOT / args.vqc_params).read_text())
+        )
 
     tag = f"{args.variant}_q{args.qubits}"
-    with RunDir(f"whitebox_qsvm_{tag}", config=vars(args), seeds=args.seeds) as run:
+    with RunDir(
+        run_name(f"whitebox_qsvm_{tag}", args.run_tag), config=vars(args), seeds=args.seeds
+    ) as run:
         out = {}
         if "p5a" in do:
             reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
+            ex5 = Exports(args.variant, args.best_params)
             out["p5a_whitebox_qsvm"] = p5a_whitebox_qsvm(
-                reg, args, cfg_adv, best_params, subset_cap, seed=0, attack_seeds=args.seeds
+                reg, args, cfg_adv, best_params, subset_cap, seed=0, attack_seeds=args.seeds, ex=ex5
             )
+            _write_stage_exports(run.path, "p5a", ex5)
             run.write_json("results_partial.json", out)
         if "p7b" in do:
             reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
+            ex = Exports(args.variant, args.best_params)
+            ex.extra["vqc_params_file"] = args.vqc_params
+            ex.extra["vqc_config"] = {k: best_params[k] for k in VQC_KEYS}
             out["p7b_kernel_exhaustion"] = p7b_kernel_exhaustion(
-                reg, args, cfg_adv, best_params, subset_cap, seed=0
+                reg, args, cfg_adv, best_params, subset_cap, seed=0, ex=ex
             )
+            ex.write(run.path)
             run.write_json("results_partial.json", out)
         if "p8a" in do:
             reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
+            ex8 = Exports(args.variant, args.best_params)
             out["p8a_lengthscale_control"] = p8a_lengthscale_control(
                 reg,
                 cfg_adv,
@@ -1312,7 +1668,9 @@ def main():
                 seed=0,
                 gamma_mults=args.gamma_mults,
                 attack_seeds=args.seeds,
+                ex=ex8,
             )
+            _write_stage_exports(run.path, "p8a", ex8)
             run.write_json("results_partial.json", out)
         if "p9a" in do:
             reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
@@ -1329,9 +1687,46 @@ def main():
             run.write_json("results_partial.json", out)
         if "p11c" in do:
             reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
-            out["p11c_objective_and_regularization"] = p11c_objective_and_regularization(
-                reg, args, cfg_adv, cfg_q, best_params, subset_cap, seed=0, c_grid=args.c_grid
+            ex11 = Exports(args.variant, args.best_params)
+            ex11.extra["streams_note"] = (
+                "part A: mass and loss attacks np.random.default_rng(1), random control "
+                "default_rng(2), uniform-angle baseline from default_rng(seed); part B: mass "
+                "descent default_rng(s) for s in 1-3"
             )
+            out["p11c_objective_and_regularization"] = p11c_objective_and_regularization(
+                reg,
+                args,
+                cfg_adv,
+                cfg_q,
+                best_params,
+                subset_cap,
+                seed=0,
+                c_grid=args.c_grid,
+                ex=ex11,
+            )
+            _write_stage_exports(run.path, "p11c", ex11)
+            run.write_json("results_partial.json", out)
+        if "p11e" in do:
+            reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
+            ex11e = Exports(args.variant, args.best_params)
+            ex11e.extra["streams_note"] = (
+                "per attack seed s and radius e: loss ascent spawn_rng(s, 'p9a_<bandwidth>_<e>'), "
+                "mass descent np.random.default_rng(s), random control "
+                "spawn_rng(s, 'p11e_random_<e>')"
+            )
+            out["p11e_regularization_radii"] = p11e_regularization_radii(
+                reg,
+                args,
+                cfg_adv,
+                best_params,
+                subset_cap,
+                seed=0,
+                c_grid=args.c_grid,
+                attack_seeds=args.seeds,
+                c_index=args.c_index,
+                ex=ex11e,
+            )
+            _write_stage_exports(run.path, "p11e", ex11e)
             run.write_json("results_partial.json", out)
         if "p14a" in do:
             reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)

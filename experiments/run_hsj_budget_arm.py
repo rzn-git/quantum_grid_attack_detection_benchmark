@@ -46,6 +46,8 @@ from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_ya
 
 log = get_logger(__name__)
 
+# The five restarts of 2026-08-15: the published range when this arm ran, and its control band.
+# The paper now quotes ten restarts (0.573 to 4.990, mean 3.413; experiments/pool_hsj_restarts.py).
 PUBLISHED_QSVM_RESTART_RANGE = (2.808, 4.917)
 PUBLISHED_QSVM_RESTART_MEAN = 3.920
 
@@ -102,6 +104,7 @@ def main() -> None:
         out: dict = {}
         for fam in args.families:
             out[fam] = {}
+            zoo.clean_proba(fam, X, y)  # runner guard: fail on a degenerate clean predictor
             for name, b in budgets.items():
                 meds, advs, qs = [], [], []
                 t0 = time.perf_counter()

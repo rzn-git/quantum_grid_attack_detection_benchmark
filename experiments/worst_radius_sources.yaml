@@ -1,0 +1,117 @@
+# Which stored white-box curves are read at the worst grid radius inside the budget
+# (read by experiments/read_worst_radius.py).
+#
+# Operator ruling (h), decision log 2026-11-20T10:17Z: an attacker bounded by a radius may use
+# any smaller perturbation, so a white-box result is read at the grid radius, at or below the
+# budget, that leaves the lowest mean attacked macro-F1 over the attack starts. The source runs
+# stored the attacked score per radius and per start, so nothing is attacked again.
+#
+# Per source:
+#   kernel_run   run_whitebox_qsvm.py --only p5a: the QSVM's white-box attack and the tuned
+#                RBF-SVM as its matched control, one fitted model each, ten attack starts
+#   labels_file  per-row true labels of the evaluated rows, for the constant-predictor floor;
+#                the QSVM's clean macro-F1 recomputed from it must equal the kernel run's
+#   verdict_run  the registered verdict whose white-box retentions the reading at the budget
+#                must reproduce (the anchor), and the transfer retention of its statistic A
+#   registered   the bars registered for that source before its runs (decision log
+#                2026-11-16T11:43Z for the gas data, 2026-11-16T12:17Z for the grids)
+#   shared_run   the shared-protocol run (PGD crafted on the unweighted MLP): its curve of
+#                every family is stored so the text can say how far the two readings of a
+#                transferred attack are apart. On a replication source it is the run the
+#                verdict took its transfer retention from, and the statistic A is also
+#                stored with the transfer at its own worst radius; the exhibits and the
+#                registered verdicts keep the transfer at the budget.
+#   shared_white_box  the families whose shared-protocol curve is their own white-box
+#                attack and enters the robustness table (MSU/ORNL only)
+# MSU/ORNL is where each finding was made, so it has no registered bar; its transfer retention
+# is the kernel run's own (same model, rows and attack starts).
+budget: 0.5
+# The new checklist choice 7 on a replication source: D is the tuned RBF-SVM's white-box
+# retention read at the budget minus read at the worst radius. Registered at 10:17Z before the
+# gas and grid curves were read.
+reading_radius:
+  yes_at: 0.20
+  partial_at: 0.05
+sources:
+  msu:
+    kernel_run: 20260814T074242Z_whitebox_qsvm_binary_q8
+    labels_file: results/runs/20261117T075906Z_adversarial_binary_q8_vqc_table1/predictions.parquet
+    full_feature_mlp: p6a_fullfeature_mlp
+    shared_run: 20261117T075906Z_adversarial_binary_q8_vqc_table1
+    shared_white_box: [mlp, vqc]
+  gas:
+    kernel_run: 20261116T210229Z_whitebox_qsvm_gas_binary_q8
+    labels_file: results/runs/20261118T122649Z_square_blackbox_gas_binary_q8/predictions.parquet
+    verdict_run: 20261118T161622Z_gas_robustness_verdict_gas_binary
+    shared_run: 20261116T193415Z_adversarial_gas_binary_q8
+    registered:
+      rule: gas
+      a_min: 0.30
+      b_min: 0.20
+      alpha: 0.05
+  # The gas data with pressure log-scaled (experiment gas_slog_robustness, registered in the
+  # decision log at 2026-11-21T18:20Z with the bars of `gas`). Its kernel run scores the QSVM on
+  # the exact complex128 path (amendment of 2026-11-21T18:38Z), and its labels file carries
+  # that path's predictions. The replication figure's gas column reads this source; `gas` above
+  # stays as the main-study pipeline's record.
+  gas_slog:
+    kernel_run: 20261121T183737Z_whitebox_qsvm_gas_binary_slog_q8
+    labels_file: results/runs/20261121T183737Z_whitebox_qsvm_gas_binary_slog_q8/exports_p5a/predictions.parquet
+    verdict_run: 20261121T215242Z_gas_robustness_verdict_gas_binary_slog
+    shared_run: 20261121T181609Z_adversarial_gas_binary_slog_q8
+    registered:
+      rule: gas
+      a_min: 0.30
+      b_min: 0.20
+      alpha: 0.05
+  fdia14:
+    kernel_run: 20261118T160116Z_whitebox_qsvm_fdia14_binary_q8
+    labels_file: results/runs/20261118T160116Z_whitebox_qsvm_fdia14_binary_q8/exports_p5a/predictions.parquet
+    verdict_run: 20261118T214119Z_fdia_h2_verdict_fdia14_binary
+    shared_run: 20261117T093132Z_adversarial_fdia14_binary_q8
+    registered:
+      rule: grid
+      a_min: 0.20
+      f_max: -0.10
+  fdia118:
+    kernel_run: 20261119T004957Z_whitebox_qsvm_fdia118_binary_q8
+    labels_file: results/runs/20261119T004957Z_whitebox_qsvm_fdia118_binary_q8/exports_p5a/predictions.parquet
+    verdict_run: 20261119T031058Z_fdia_h2_verdict_fdia118_binary
+    shared_run: 20261118T233915Z_adversarial_fdia118_binary_q8
+    registered:
+      rule: grid
+      a_min: 0.20
+      f_max: -0.10
+# The end-state sweeps of the arXiv appendix (one RBF-SVM per kernel width, one QSVM per encoding
+# bandwidth), read at the full budget, as their tables print them, and at the worst radius inside
+# it. Every setting reads in the inverted band at its worst radius, which is why the kernel
+# length scale left the list of evaluation choices. That is a single-radius label; the paper's
+# end states hold across a run of radii, so the reader also counts the settings inverted at
+# persistence_min_radii radii or more (review of ruling (h), finding M3).
+end_state_sweeps:
+  budget: 2.0
+  persistence_min_radii: 3
+  sweeps:
+    rbf_width:
+      run: 20260814T111131Z_whitebox_qsvm_binary_q8
+      block: p8a_lengthscale_control
+      axis: per_width
+    quantum_bandwidth:
+      run: 20260814T180008Z_whitebox_qsvm_binary_q8
+      block: p9a_quantum_bandwidth_regime
+      axis: per_bandwidth
+# The kernel contrast with whole files held out (experiments/run_group_whitebox_control.py at
+# the six grid radii; WF-R, registered in the decision log at 2026-11-20T10:33Z). A partition
+# passes when the QSVM at its worst radius is at least gap_min macro-F1 below the RBF-SVM at
+# its worst radius, in the mean and in at least seeds_min of the ten attack seeds. The reading
+# at the budget must reproduce the first run of the control within anchor_tol (two rows of
+# the 500). The reader also stores the reading of an attacker who picks the radius per input
+# from each run's predictions.parquet.
+whole_file:
+  runs:
+    - 20261120T112410Z_group_whitebox_control_binary_q8_radii_gate_p0
+    - 20261120T112409Z_group_whitebox_control_binary_q8_radii_gate_p2
+  anchor_run: 20260816T044723Z_probe_group_whitebox_binary_q8
+  anchor_tol: 0.004
+  gap_min: 0.05
+  seeds_min: 9

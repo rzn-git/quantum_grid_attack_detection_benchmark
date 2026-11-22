@@ -33,7 +33,9 @@ CONTROLS.
                        than the descending objective at any radius. If noise beats the targeted
                        attack, the gradient is wrong and no number here means anything.
 
-Run:  python -m experiments.run_vqc_objective_axis
+Run:  python -m experiments.run_vqc_objective_axis [--best-params FILE] [--run-tag TAG]
+The positive control's published profile is the grid file's depth-4 VQC; under another tuned
+file it is recorded, not expected to pass.
 """
 
 from __future__ import annotations
@@ -44,8 +46,10 @@ import json
 import numpy as np
 import torch
 
+from experiments.exports import Exports
 from experiments.run_adversarial import CLASSICAL, FittedZoo, _f1  # noqa: F401  (CLASSICAL: zoo)
 from experiments.run_whitebox_qsvm import _mass_descent
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.attacks.evasion import pgd
 from qgridbench.models.classical.zoo import stratified_cap
 from qgridbench.protocol import prepare_regime
@@ -107,11 +111,12 @@ def main() -> None:
     ap.add_argument("--qubits", type=int, default=8)
     ap.add_argument("--encoding", default="zz")  # routes the QSVM only; the VQC ansatz is fixed
     ap.add_argument("--chunk", type=int, default=128)
+    add_tuned_file_args(ap)
     args = ap.parse_args()
 
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
-    best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best = load_tuned_file(args.best_params, args.variant, args.qubits)
     pgd_cfg = cfg_adv["evasion"]["pgd"]
     radii = sorted(set(cfg_adv["evasion"]["epsilons"]) | {1.0, 2.0})
 
@@ -124,9 +129,11 @@ def main() -> None:
         "control_tol": CONTROL_TOL,
         "disabled_mass": DISABLED_MASS,
         "disabled_f1_band": DISABLED_F1_BAND,
+        "best_params": bp_rel,
     }
 
-    with RunDir(f"vqc_objective_axis_{args.variant}_q{args.qubits}", config=cfg, seeds=[0]) as run:
+    name = run_name(f"vqc_objective_axis_{args.variant}_q{args.qubits}", args.run_tag)
+    with RunDir(name, config=cfg, seeds=[0]) as run:
         reg = prepare_regime(args.variant, "pca", n_components=args.qubits, seed=0)
         zoo = FittedZoo(reg, args.encoding, args.qubits, 0, cfg_q["qkernel"]["subset_cap"], best)
         vqc, sc = zoo.models["vqc"], zoo._angle
@@ -144,9 +151,14 @@ def main() -> None:
         m0 = float(np.abs(expvals_np(vqc, sc, X)).mean())
         log.info("clean |<Z>| %.4f | floor %.4f | n_eval %d", m0, floor, len(y))
 
-        def read(Xa: np.ndarray) -> dict:
+        ex = Exports(args.variant, bp_rel)
+        ex.predictions(0, "clean", "vqc", zoo.clean_proba("vqc", X, y), y, idx)
+
+        def read(Xa: np.ndarray, cond: str) -> dict:
             proba = zoo.predict_proba("vqc", Xa)
+            ex.predictions(0, cond, "vqc", proba, y, idx)
             f1 = _f1(y, proba)
+            ex.metric(0, "vqc", cond, "macro_f1", f1)
             pred = proba.argmax(1)
             return {
                 "mass_ratio": float(np.abs(expvals_np(vqc, sc, Xa)).mean() / m0),
@@ -165,7 +177,7 @@ def main() -> None:
                 scale,
                 n_steps=pgd_cfg["n_steps"],
                 step_frac=pgd_cfg["step_frac"],
-                rng=spawn_rng(0, f"p7b_vqc_{e}"),  # p7b's stream, so the control can be exact
+                rng=spawn_rng(0, ex.stream(f"p7b_vqc_{e}")),  # p7b's stream: exact control
             )
             desc_arm = _mass_descent(
                 lambda Z: vqc_mass_grad(vqc, sc, Z, args.chunk),
@@ -177,11 +189,15 @@ def main() -> None:
                 pgd_cfg["step_frac"],
             )
             rnd_arm = X + np.random.default_rng(2).uniform(-1, 1, X.shape) * e * scale
+            for cond, Xa in (("loss", loss_arm), ("descent", desc_arm), ("random", rnd_arm)):
+                ex.crafted_input(0, f"{cond}@{e}", "vqc" if cond != "random" else "random", Xa)
             curve[str(e)] = {
-                "loss_objective": read(loss_arm),
-                "mass_descent_objective": read(desc_arm),
-                "random_control": read(rnd_arm),
+                "loss_objective": read(loss_arm, f"loss@{e}"),
+                "mass_descent_objective": read(desc_arm, f"descent@{e}"),
+                "random_control": read(rnd_arm, f"random@{e}"),
             }
+            for obj, c in curve[str(e)].items():
+                ex.metric(0, "vqc", f"{obj}@{e}", "mass_ratio", c["mass_ratio"])
             c = curve[str(e)]
             log.info(
                 "eps %-4s | loss mass %.4f f1 %.4f | DESCENT mass %.4f f1 %.4f | random mass %.4f",
@@ -250,6 +266,9 @@ def main() -> None:
                 "-> the disabled regime is reachable and the claim is objective-dependent"
             ),
         }
+        ex.extra["streams_unnamed"] = "descent: default_rng(1); random: default_rng(2)"
+        ex.extra["clean_mass_abs"] = m0
+        ex.write(run.path)
         run.write_json("results.json", {"curve": curve, "verdict": verdict})
         run.metrics = {"min_mass_ratio_descent": float(min_mass)}
         log.info("VERDICT\n%s", json.dumps(verdict, indent=2))

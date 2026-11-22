@@ -42,6 +42,7 @@ import numpy as np
 
 from experiments.run_adversarial import CLASSICAL, FittedZoo, _f1
 from experiments.run_group_split_control import group_splits, reconstruct_groups
+from experiments.runner_guard import assert_clean_predictor
 from qgridbench.attacks.evasion import pgd
 from qgridbench.attacks.gradients import GradProvider
 from qgridbench.eval.baselines import trivial_baselines
@@ -100,7 +101,10 @@ def run_arms(reg, encoding, qubits, seeds, subset_cap, best, cfg_adv, tag):
         fit_model("mlp", fixed, zoo.Xtr, zoo.ytr, balance_via_sample_weight=True)
 
         def proba(name, X, _f=fixed, _z=zoo):
-            return _f.predict_proba(X) if name == "mlp_balanced" else _z.predict_proba(name, X)
+            p = _f.predict_proba(X) if name == "mlp_balanced" else _z.predict_proba(name, X)
+            if X is Xte:  # the clean set: a constant or non-finite predictor fails the run
+                assert_clean_predictor(name, yte, p, p.argmax(1))
+            return p
 
         models = families + ["mlp_balanced"]
         sets = {"clean": Xte}

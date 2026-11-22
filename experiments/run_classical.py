@@ -13,14 +13,29 @@ Run:  python -m experiments.run_classical --variant binary --regime full
 from __future__ import annotations
 
 import argparse
-import json
+import os
+import sys
 
-import numpy as np
-import optuna
-from sklearn.metrics import f1_score
+# --threads N pins the BLAS/OpenMP/joblib pools before numpy is imported and passes n_jobs=N
+# to the tree models and XGBoost. Absent, nothing changes: the libraries keep their defaults,
+# as every published run used.
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--threads", type=int, default=None)
+THREADS = _pre.parse_known_args(sys.argv[1:])[0].threads
+THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "LOKY_MAX_CPU_COUNT")
+if THREADS is not None:
+    for _var in THREAD_VARS:
+        os.environ[_var] = str(THREADS)
 
-from qgridbench.eval.metrics import compute_all
-from qgridbench.models.classical.zoo import (
+import json  # noqa: E402
+
+import numpy as np  # noqa: E402
+import optuna  # noqa: E402
+from sklearn.metrics import f1_score  # noqa: E402
+
+from experiments.exports import Exports  # noqa: E402
+from qgridbench.eval.metrics import compute_all  # noqa: E402
+from qgridbench.models.classical.zoo import (  # noqa: E402
     MODEL_NAMES,
     build,
     fit_model,
@@ -28,18 +43,30 @@ from qgridbench.models.classical.zoo import (
     stratified_cap,
     suggest_params,
 )
-from qgridbench.protocol import aggregate_seeds, prepare_regime
-from qgridbench.utils.run_tracking import (
+from qgridbench.protocol import aggregate_seeds, prepare_regime  # noqa: E402
+from qgridbench.utils.run_tracking import (  # noqa: E402
     REPO_ROOT,
     RunDir,
     get_logger,
     load_yaml,
     mlflow_log,
 )
-from qgridbench.utils.seeding import set_all_seeds
+from qgridbench.utils.seeding import set_all_seeds  # noqa: E402
 
 log = get_logger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+
+# estimators with an n_jobs parameter; --threads pins it, otherwise the zoo's n_jobs=-1 stays
+N_JOBS_MODELS = ("rf", "xgb", "lgbm")
+
+
+def build_pinned(name: str, params: dict, seed: int):
+    """zoo.build, with n_jobs=THREADS on the tree models and XGBoost when --threads is given."""
+    est = build(name, params, seed)
+    if THREADS is not None and name in N_JOBS_MODELS:
+        est.set_params(n_jobs=THREADS)
+    return est
 
 
 def tune_model(name, reg, tuning_seeds, n_trials, subset_cap, storage, study_name):
@@ -53,7 +80,7 @@ def tune_model(name, reg, tuning_seeds, n_trials, subset_cap, storage, study_nam
         scores = []
         for s in tuning_seeds:
             set_all_seeds(s)
-            est = build(name, params, s)
+            est = build_pinned(name, params, s)
             fit_model(name, est, Xtr_c, ytr_c)
             scores.append(f1_score(yva, est.predict(Xva), average="macro"))
         return float(np.mean(scores))
@@ -72,18 +99,26 @@ def tune_model(name, reg, tuning_seeds, n_trials, subset_cap, storage, study_nam
     return study.best_params, study.best_value
 
 
-def eval_model(name, best_params, reg, seeds, subset_cap):
+def eval_model(name, best_params, reg, seeds, subset_cap, exports: Exports | None = None):
+    """10-seed test evaluation. `exports` only records (per-seed metrics and test predictions);
+    no fit, draw order or metric depends on it."""
     Xtr, ytr = reg.X["train"], reg.y["train"]
     Xte, yte = reg.X["test"], reg.y["test"]
     cap_idx = stratified_cap(Xtr, ytr, subset_cap, seed=0) if subset_cap else np.arange(len(ytr))
     per_seed, train_times, latencies = [], [], []
     for s in seeds:
         set_all_seeds(s)
-        est = build(name, best_params, s)
+        est = build_pinned(name, best_params, s)
         train_times.append(fit_model(name, est, Xtr[cap_idx], ytr[cap_idx]))
         proba, latency = predict_proba_timed(est, Xte)
         latencies.append(latency)
         per_seed.append(compute_all(yte, proba))
+        if exports is not None:
+            exports.predictions(s, "clean", name, proba, yte, np.arange(len(yte)))
+            for k, v in per_seed[-1].items():
+                exports.metric(s, name, "clean", k, v)
+            exports.metric(s, name, "clean", "train_time_s", train_times[-1])
+            exports.metric(s, name, "clean", "infer_latency_s", latencies[-1])
     agg = aggregate_seeds(per_seed)
     agg["train_time_s"] = {
         "mean": float(np.mean(train_times)),
@@ -104,11 +139,17 @@ def main():
     ap.add_argument("--models", nargs="*", default=MODEL_NAMES)
     ap.add_argument("--n-trials", type=int, default=None)
     ap.add_argument("--seeds", type=int, nargs="*", default=None)
+    ap.add_argument("--threads", type=int, default=None, help="pin BLAS/OpenMP/joblib and n_jobs")
     ap.add_argument(
         "--subset-cap",
         type=int,
         default=None,
         help="cap train subset (PCA-regime fairness with quantum)",
+    )
+    ap.add_argument(
+        "--study-suffix",
+        default="",
+        help="appended to the run tag and study names: a fresh search when the regime changed",
     )
     args = ap.parse_args()
 
@@ -121,11 +162,15 @@ def main():
 
     reg = prepare_regime(args.variant, args.regime, n_components=args.pca, seed=0)
     tag = f"{args.variant}_{args.regime}{args.pca or ''}"
+    if args.study_suffix:
+        tag += f"_{args.study_suffix}"
 
     with RunDir(
         f"classical_{tag}", config={**vars(args), "n_trials": n_trials}, seeds=seeds
     ) as run:
         results = {}
+        exports = Exports(args.variant, tuned_file=None)
+        exports.extra = {"threads": THREADS, "regime": args.regime, "pca": args.pca, "studies": {}}
         for name in args.models:
             study_name = f"cls_{name}_{tag}"
             # one sqlite file per study: parallel model processes never contend
@@ -137,7 +182,8 @@ def main():
             best_params, best_val = tune_model(
                 name, reg, tuning_seeds, n_trials, cap, storage, study_name
             )
-            res = eval_model(name, best_params, reg, seeds, cap)
+            exports.extra["studies"][name] = study_name
+            res = eval_model(name, best_params, reg, seeds, cap, exports)
             res["best_val_macro_f1"] = best_val
             results[name] = res
             f1 = res["aggregate"]["macro_f1"]
@@ -157,6 +203,7 @@ def main():
                 tags={"phase": "classical"},
             )
         run.write_json("results.json", results)
+        exports.write(run.path)
         run.metrics = {n: r["aggregate"]["macro_f1"]["mean"] for n, r in results.items()}
         print(json.dumps(run.metrics, indent=2))
         print(f"-> {run.path}")

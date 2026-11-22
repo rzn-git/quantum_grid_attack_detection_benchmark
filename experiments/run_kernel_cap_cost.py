@@ -24,10 +24,17 @@ Graduated from tmp/ because results.tex reports its numbers: the 2,000-sample ca
 (0.595 at n=2,000 to 0.763 at n=47,020). It writes a RunDir under results/runs/ like every
 other runner, so those numbers carry provenance -- git sha, lock hash, resolved config, wall
 time -- instead of landing in gitignored scratch.
+
+Fixed-hyperparameter path (2026-11-20, probe CC2): the cap cost above is at fixed features and
+hyperparameters, but the projection's cost is not readable from it, because this probe uses the
+PCA-8 tuned set while the full-feature table uses its own. `fixed_hyperparameters` scores each
+model under each tuned set held fixed at three stages (all features and all rows; PCA and all
+rows; PCA and the cap), so each step changes one thing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from qgridbench.eval.metrics import compute_all
@@ -37,6 +44,51 @@ from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_ya
 from qgridbench.utils.seeding import set_all_seeds
 
 log = get_logger(__name__)
+
+# the two tuned sets the fixed-hyperparameter path holds fixed, by the regime each was tuned in
+TUNED_SETS = {
+    "matched_regime": REPO_ROOT / "results" / "adv_best_params_binary_q8.json",
+    "full_features": REPO_ROOT
+    / "results"
+    / "runs"
+    / "merged_accuracy_binary_full"
+    / "results.json",
+}
+
+
+def tuned_params(name: str, model: str) -> dict:
+    """One model's hyperparameters from a tuned set; a missing model fails loud."""
+    node = json.loads(TUNED_SETS[name].read_text())[model]
+    return node["best_params"] if "best_params" in node else node
+
+
+def fixed_hyperparameter_path(models, dims, cap) -> dict:
+    """Per tuned set and model, seed 0: the score on all features and all training rows, then per
+    dimensionality the score after PCA on all rows and after PCA under the cap."""
+    full = prepare_regime("binary", "full", seed=0)
+    regimes = {d: prepare_regime("binary", "pca", n_components=d, seed=0) for d in dims}
+    subsets = {d: kernel_subset(regimes[d], cap, seed=0) for d in dims}
+    out: dict = {}
+    for name in TUNED_SETS:
+        out[name] = {}
+        for model in models:
+            p = tuned_params(name, model)
+            cell = {
+                "all_features": score(
+                    model, full.X["train"], full.y["train"], full.X["test"], full.y["test"], p
+                )
+            }
+            for d in dims:
+                reg, sub = regimes[d], subsets[d]
+                Xte, yte = reg.X["test"], reg.y["test"]
+                cell[f"pca{d}"] = {
+                    "full_train": score(model, reg.X["train"], reg.y["train"], Xte, yte, p),
+                    "capped": score(model, reg.X["train"][sub], reg.y["train"][sub], Xte, yte, p),
+                }
+                log.info("%s %s pca%d: %s", name, model, d, cell[f"pca{d}"])
+            log.info("%s %s all features: %.4f", name, model, cell["all_features"])
+            out[name][model] = cell
+    return out
 
 
 def score(model, Xtr, ytr, Xte, yte, params, seed=0):
@@ -63,6 +115,13 @@ def main() -> None:
             "pca_dims": list(dims),
             "models": list(models),
             "curve_sizes": [*curve_sizes, "full"],
+            "tuned_sets": {
+                name: {
+                    "path": path.relative_to(REPO_ROOT).as_posix(),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+                for name, path in TUNED_SETS.items()
+            },
         },
         seeds=[0],
     ) as run:
@@ -115,6 +174,9 @@ def main() -> None:
             run.write_json("results_partial.json", {**out, "train_size_curve_pca8_xgb": curve})
             print(f"  n={len(idx):>6}  macro-F1 {s:.4f}")
         out["train_size_curve_pca8_xgb"] = curve
+        run.write_json("results_partial.json", out)
+
+        out["fixed_hyperparameters"] = fixed_hyperparameter_path(models, dims, cap)
 
         run.metrics = {
             "cap_cost_pca8_xgb": out["pca8_xgb"]["cap_cost"],

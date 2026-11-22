@@ -163,7 +163,13 @@ class VQClassifier:
 
     # -------------------------------------------------------------------- train
 
-    def fit(self, X, y, X_val=None, y_val=None):
+    def fit(self, X, y, X_val=None, y_val=None, batch_inputs=None):
+        """Adam on class-weighted CE, early stopping on validation macro-F1.
+
+        `batch_inputs(idx)`, when given, returns the encoded inputs the optimiser step sees for
+        training rows `idx` (default `X[idx]`). Per-minibatch adversarial training passes the
+        inner maximiser against the current parameters here; nothing else in the loop changes.
+        """
         t0 = time.perf_counter()
         rng = np.random.default_rng(self.seed)
         torch.manual_seed(self.seed)
@@ -188,13 +194,20 @@ class VQClassifier:
             batch_losses, grad_norms = [], []
             for s in range(0, len(y), self.batch_size):
                 b = order[s : s + self.batch_size]
+                if batch_inputs is None:
+                    xb = Xt[b]
+                else:
+                    xb = torch.as_tensor(np.asarray(batch_inputs(b)), dtype=torch.float64)
+                    if xb.shape != (len(b), Xt.shape[1]):
+                        raise ValueError(f"batch_inputs returned {tuple(xb.shape)} for {len(b)}")
+                yb = yt[b]
                 opt.zero_grad(set_to_none=True)
                 total = 0.0
                 for c0 in range(0, len(b), chunk):
-                    cb = b[c0 : c0 + chunk]
-                    loss = self._ce_loss(self._logits(Xt[cb]), yt[cb], class_w)
-                    (loss * (len(cb) / len(b))).backward()
-                    total += float(loss.detach()) * len(cb) / len(b)
+                    xc, yc = xb[c0 : c0 + chunk], yb[c0 : c0 + chunk]
+                    loss = self._ce_loss(self._logits(xc), yc, class_w)
+                    (loss * (len(yc) / len(b))).backward()
+                    total += float(loss.detach()) * len(yc) / len(b)
                 gnorm = float(
                     torch.sqrt(sum((p.grad**2).sum() for p in params if p.grad is not None))
                 )

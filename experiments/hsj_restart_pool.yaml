@@ -1,0 +1,61 @@
+# Which HopSkipJump restart runs each model's black-box cell pools
+# (read by experiments/pool_hsj_restarts.py).
+#
+# Operator ruling (i), decision log 2026-11-20T09:19Z: the restarts of 2026-08-15 and of
+# 2026-11-20 for the QSVM, the MLP, LightGBM and XGBoost are one sample of ten per model. The
+# November run reproduced both controls and the models' clean scores, and its QSVM restarts
+# spread wider than the five August draws (0.57 to 4.99 sigma against 2.81 to 4.92), so quoting
+# either five alone understates the spread.
+#
+# Which run sits under which model, and what is known about the model it attacked
+# (reports/review_ruling_i_20261120/review.md, finding F3):
+# - VQC: the Table I configuration has its own run; the August VQC is another configuration.
+# - RBF-SVM, random forest: the run that records the found share; their August restarts are
+#   rows the attack returned unmoved and cannot be pooled.
+# - QSVM, MLP, LightGBM: the November run's fitted models give the same clean probabilities on
+#   the 100 points as the models of the paper's robustness row (difference 0.0).
+# - XGBoost: its fit depends on the thread count. The robustness row (3 threads), the November
+#   restarts (8) and the August restarts (unrecorded) are three slightly different fits (3 of 100
+#   clean labels differ between the first two). Its restart mean is the same in both restart
+#   runs (0.211 and 0.213).
+variant: binary
+qubits: 8
+# every source run must agree on these attack-budget and sample fields
+must_match: [max_iter, max_eval, init_eval, eval_subset]
+# a model whose runs do not all record the found share is read over all points; that is allowed
+# only while every share that was recorded is at least this
+min_found_share_all_points: 0.95
+# Fields a run's params.yaml predates, stated here so the check never assumes them. Evidence for
+# the two August runs: the runner then took no variant or tuned-file argument and read the one
+# adversarial tuned file; the run names carry binary_q8; the clean macro-F1 of the QSVM, the MLP
+# and LightGBM on the 100 points equals the August single-draw run to four digits (decision log
+# 2026-11-20T08:40Z). Their attacked points were not stored, so the point check cannot cover
+# them and the pooled run records that.
+stated:
+  20260815T095921Z_probe_hsj_restarts_binary_q8:
+    variant: binary
+    best_params: results/adv_best_params_binary_q8.json
+  20260815T113707Z_probe_hsj_restarts_binary_q8:
+    variant: binary
+    best_params: results/adv_best_params_binary_q8.json
+families:
+  qsvm:
+    - 20260815T095921Z_probe_hsj_restarts_binary_q8
+    - 20261120T082045Z_probe_hsj_restarts_binary_q8_repro
+  mlp:
+    - 20260815T095921Z_probe_hsj_restarts_binary_q8
+    - 20261120T082045Z_probe_hsj_restarts_binary_q8_repro
+  lgbm:
+    - 20260815T113707Z_probe_hsj_restarts_binary_q8
+    - 20261120T082045Z_probe_hsj_restarts_binary_q8_repro
+  xgb:
+    - 20260815T113707Z_probe_hsj_restarts_binary_q8
+    - 20261120T082045Z_probe_hsj_restarts_binary_q8_repro
+  logreg:
+    - 20260815T113707Z_probe_hsj_restarts_binary_q8
+  rbf_svm:
+    - 20261120T020552Z_probe_hsj_restarts_binary_q8
+  rf:
+    - 20261120T020552Z_probe_hsj_restarts_binary_q8
+  vqc:
+    - 20261118T154445Z_probe_hsj_restarts_binary_q8_vqc_table1

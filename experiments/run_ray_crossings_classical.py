@@ -14,6 +14,14 @@ claims the fidelity kernel is fragile.
 
 Run:  python -m experiments.run_ray_crossings_classical
 
+R4-17(b): `--dump-rays` also records each setting's endpoint flip rate and writes per-ray counts,
+crossing indices and flips to `rays.npz` under the RunDir
+`ray_crossings_classical_dump_binary_q8`; blocking anchor: every archived row
+(`20260815T211558Z_probe_ray_crossings_classical_binary_q8`) is reproduced exactly. Serial: the
+whole scan took about 1 min in the archive, so a pool would cost more than it saves.
+
+Run:  python -m experiments.run_ray_crossings_classical --dump-rays
+
 Graduated from tmp/ because make_report consumes its run dir for the paper's
 ray_crossings_binary_q8 table; the RunDir name keeps its original `probe_` prefix so
 already-recorded results still resolve.
@@ -21,13 +29,20 @@ already-recorded results still resolve.
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import numpy as np
 from sklearn.metrics import f1_score
 
 from experiments.run_ablations import kernel_subset
-from qgridbench.models.classical.zoo import build, fit_model, stratified_cap
+from experiments.run_ray_crossings import (
+    ARCHIVED_CLASSICAL_RUN,
+    ray_set,
+    ray_stats,
+    save_rays,
+)
+from qgridbench.models.classical.zoo import build, fit_model
 from qgridbench.protocol import prepare_regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml
 from qgridbench.utils.seeding import set_all_seeds
@@ -39,6 +54,10 @@ GAMMA_MULTS = (0.01, 0.1, 1.0, 10.0, 100.0)
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dump-rays", action="store_true", help="R4-17(b): write rays.npz + anchor")
+    ap.add_argument("--n-rays", type=int, default=None, help="rays per setting (default 100)")
+    args = ap.parse_args()
     cfg = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")["ablations"]["bandwidth_fragility"]
     best = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
     q = cfg["cell"][1]
@@ -46,18 +65,23 @@ def main() -> None:
     reg = prepare_regime("binary", "pca", n_components=q, seed=0)
     sub = kernel_subset(reg, 2000, seed=0)
     Xtr, ytr = reg.X["train"][sub], reg.y["train"][sub]
-    scale = reg.feature_scale
-    ev = stratified_cap(reg.X["test"], reg.y["test"], cfg["eval_subset"], seed=0)
-    X_ev, y_ev = reg.X["test"][ev], reg.y["test"][ev]
-
-    rng = np.random.default_rng(0)  # SAME seed as the quantum arm -> identical rays
-    delta = rng.uniform(-1.0, 1.0, X_ev.shape) * RADIUS * scale
+    # SAME ray set as the quantum arm (block 0 = the archived 100 rays, then any extra rays)
+    blocks = ray_set(reg, cfg["eval_subset"], args.n_rays or cfg["eval_subset"], RADIUS)
+    X_ev, y_ev, delta = blocks[0]
     ts = np.linspace(0.0, 1.0, N_SAMPLES)
 
-    with RunDir(
-        "probe_ray_crossings_classical_binary_q8", config={"gamma_mults": list(GAMMA_MULTS)}
-    ) as run:
-        rows = []
+    name = (
+        "ray_crossings_classical_dump_binary_q8"
+        if args.dump_rays
+        else "probe_ray_crossings_classical_binary_q8"
+    )
+    cfg_run = {
+        "gamma_mults": list(GAMMA_MULTS),
+        "dump_rays": args.dump_rays,
+        "n_rays": args.n_rays,
+    }
+    with RunDir(name, config=cfg_run) as run:
+        rows, dumps = [], {}
         base_gamma = None
         for m in GAMMA_MULTS:
             p = dict(best["rbf_svm"])
@@ -74,6 +98,13 @@ def main() -> None:
             s = np.sign(F)
             s[s == 0] = 1.0
             crossings = (np.diff(s, axis=0) != 0).sum(axis=0)
+            if args.dump_rays:
+                extra = [
+                    np.stack([est.decision_function(X + t * d) for t in ts])
+                    for X, _y, d in blocks[1:]
+                ]
+                F_all = np.concatenate([F, *extra], axis=1)
+                dumps[str(float(m))] = ray_stats(F_all)
             rows.append(
                 {
                     "gamma_mult": float(m),
@@ -96,6 +127,30 @@ def main() -> None:
                 100 * rows[-1]["frac_rays_multi_crossing"],
             )
         peak = max(rows, key=lambda r: r["clean_macro_f1"])
+        if args.dump_rays:
+            save_rays(run.path / "rays.npz", dumps)
+            arch = json.loads((REPO_ROOT / ARCHIVED_CLASSICAL_RUN / "results.json").read_text())
+            mism = {
+                f"{a['gamma_mult']}:{k}": (r[k], a[k])
+                for r, a in zip(rows, arch["rows"])
+                for k in a
+                if r[k] != a[k]
+            }
+            flips = {k: float(np.mean(v["flip"])) for k, v in dumps.items()}
+            run.write_json(
+                "results.json",
+                {
+                    "rows": rows,
+                    "flip_rate_all_rays": flips,
+                    "anchor": {"mismatches": mism, "pass": not mism},
+                },
+            )
+            run.metrics.update({"anchor_pass": not mism})
+            log.info("anchor mismatches %s | flip rates %s", mism, flips)
+            if mism:
+                raise RuntimeError(f"R4-17(b) classical anchor FAILED: {mism}")
+            print(f"-> {run.path}")
+            return
         run.write_json("results.json", {"rows": rows, "accuracy_peak": peak})
         log.info("CLASSICAL PEAK\n%s", json.dumps(peak, indent=2))
         print(f"-> {run.path}")

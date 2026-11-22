@@ -42,7 +42,8 @@ P19d  MLP SURROGATE (blocking item 2). The MLP scores 0.4565 macro-F1 at PCA-8,
       from the FIXED surrogate. If MLP -> VQC no longer damages the VQC more than
       any classical target, the C1 asymmetry rests on a mis-specified surrogate.
 
-Run:  python -m experiments.run_review_claims  (from repo root)
+Run:  python -m experiments.run_review_claims [seeds ...] [--best-params FILE] [--run-tag TAG]
+      (from repo root; default seeds 0 1 2, the published run used 0..9)
 
 Graduated from tmp/ because the appendix reports its numbers (the ensemble result, the
 surrogate-fix baseline) and because run_constant_shift and run_operating_point_full_features import
@@ -53,15 +54,17 @@ results still resolve.
 
 from __future__ import annotations
 
-import json
-import sys
+import argparse
 
 import numpy as np
 import torch
 from sklearn.metrics import f1_score, roc_curve
 from sklearn.utils.class_weight import compute_class_weight
 
+from experiments.exports import Exports
 from experiments.run_adversarial import CLASSICAL, FittedZoo
+from experiments.runner_guard import assert_clean_predictor
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.attacks.evasion import pgd
 from qgridbench.attacks.gradients import GradProvider
 from qgridbench.models.classical.zoo import stratified_cap
@@ -71,7 +74,7 @@ from qgridbench.utils.seeding import set_all_seeds, spawn_rng
 
 log = get_logger(__name__)
 
-SEEDS = [int(a) for a in sys.argv[1:]] or [0, 1, 2]  # published evasion run used 0..9
+SEEDS = [0, 1, 2]  # default; the published run used 0..9
 ENCODING = "zz"  # the published Table II configuration (run params.yaml), NOT the CLI default
 HEADLINE_EPS = 0.5  # sigma; the Table II operating budget
 FPR_TARGETS = [0.01, 0.05]
@@ -199,10 +202,15 @@ def tpr_at_fpr(scores_val, y_val, scores_test, y_test, target_fpr):
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("seeds", type=int, nargs="*", default=SEEDS)
+    add_tuned_file_args(ap)
+    args = ap.parse_args()
+    seeds = args.seeds or SEEDS
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
     subset_cap = cfg_q["qkernel"]["subset_cap"]
-    best_params = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best_params = load_tuned_file(args.best_params, "binary", 8)
 
     reg = prepare_regime("binary", "pca", n_components=8, seed=0)
     scale = reg.feature_scale
@@ -228,10 +236,15 @@ def main():
         "cls5+qsvm": ["logreg", "rbf_svm", "rf", "xgb", "lgbm", "qsvm"],
     }
 
-    with RunDir("probe_review_claims_binary_q8", config={"seeds": SEEDS}, seeds=SEEDS) as run:
+    with RunDir(
+        run_name("probe_review_claims_binary_q8", args.run_tag),
+        config={"seeds": seeds, "best_params": bp_rel},
+        seeds=seeds,
+    ) as run:
         per_seed = []
-        for s in SEEDS:
-            rng = spawn_rng(s, "adv")  # same stream the published run used
+        ex = Exports("binary", bp_rel)
+        for s in seeds:
+            rng = spawn_rng(s, ex.stream("adv"))  # same stream the published run used
             zoo = FittedZoo(reg, ENCODING, 8, s, subset_cap, best_params)
 
             # --- P19d: the class-weighted surrogate ---------------------------
@@ -263,7 +276,10 @@ def main():
             extra = {"mlp_weighted": wmlp, "mlp_torch_unweighted": umlp}
 
             def proba(name, X, _e=extra):
-                return _e[name].predict_proba(X) if name in _e else zoo.predict_proba(name, X)
+                p = _e[name].predict_proba(X) if name in _e else zoo.predict_proba(name, X)
+                if X is Xte:  # the clean set: a constant or non-finite predictor fails the run
+                    assert_clean_predictor(name, yte, p, p.argmax(1))
+                return p
 
             all_models = families + list(extra)
 
@@ -288,6 +304,12 @@ def main():
 
             probas = {k: {m: proba(m, X) for m in all_models} for k, X in sets.items()}
             f1s = {k: {m: macro_f1(yte, p) for m, p in d.items()} for k, d in probas.items()}
+            for k, d in probas.items():
+                if k != "clean":
+                    ex.crafted_input(s, k, k.removeprefix("pgd_"), sets[k])
+                for m, p in d.items():
+                    ex.predictions(s, k, m, p, yte, ev_idx)
+                    ex.metric(s, m, k, "macro_f1", f1s[k][m])
 
             # --- P19a: soft-vote ensembles ------------------------------------
             ens = {}
@@ -307,6 +329,9 @@ def main():
                         k: tpr_at_fpr(sv, yva, probas[k][m][:, 1], yte, t) for k in sets
                     }
 
+            for k, d in ens.items():
+                for name, v in d.items():
+                    ex.metric(s, name, k, "ensemble_macro_f1", v)
             per_seed.append(
                 {
                     "f1": f1s,
@@ -326,6 +351,8 @@ def main():
             "ensemble_members": ENSEMBLES,
             "eps": HEADLINE_EPS,
         }
+        ex.extra["operating_point"] = "per model x FPR target in results.json (val threshold)"
+        ex.write(run.path)
         run.write_json("results.json", out)
         print(f"-> {run.path}")
 

@@ -47,6 +47,19 @@ def mlp_loss_input_grad(mlp: MLPClassifier, X: np.ndarray, y: np.ndarray) -> np.
     return delta @ mlp.coefs_[0].T
 
 
+def logreg_loss_input_grad(clf, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """d(BCE(sigmoid(f), y))/dX for a fitted binary logistic regression, f(x) = w.x + b.
+
+    dL/df = sigmoid(f) - y and df/dx = w, so every row of one label shares its ascent direction.
+    Verified against central finite differences in tests/test_attacks.py.
+    """
+    if len(getattr(clf, "classes_", [])) != 2:
+        raise ValueError("logreg_loss_input_grad implements the binary case only")
+    w = clf.coef_[0]
+    f = X @ w + clf.intercept_[0]
+    return (1.0 / (1.0 + np.exp(-f)) - y)[:, None] * w[None, :]
+
+
 def rbf_svm_loss_input_grad(svc, X: np.ndarray, y: np.ndarray) -> np.ndarray:
     """d(BCE(sigmoid(f), y))/dX for a fitted binary RBF-kernel SVC.
 
@@ -119,10 +132,12 @@ class GradProvider:
     """
 
     def __init__(self, model, kind: str, objective: str = "bce"):
-        if kind not in ("mlp", "vqc", "rbf_svm"):
+        if kind not in ("mlp", "vqc", "rbf_svm", "logreg"):
             raise ValueError(f"no white-box gradient for kind '{kind}'")
         if objective not in ("bce", "margin"):
             raise ValueError(f"unknown objective '{objective}'")
+        if kind == "logreg" and objective != "bce":
+            raise ValueError("logistic regression has the loss objective only")
         self.model, self.kind, self.objective = model, kind, objective
 
     def __call__(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -136,4 +151,6 @@ class GradProvider:
             return mlp_loss_input_grad(self.model, X, y)
         if self.kind == "rbf_svm":
             return rbf_svm_loss_input_grad(self.model, X, y)
+        if self.kind == "logreg":
+            return logreg_loss_input_grad(self.model, X, y)
         return self.model.loss_input_grad(X, y)

@@ -44,32 +44,78 @@ H4: tau_xgb / tau_lgbm within [0.5, 2].
 Diagnostics (no criterion): all-blocks curves, before/after-band curves, arm C, prediction
 tables over the archived constructions under file-level AND same-block gap definitions.
 
-Run:  python -m experiments.run_leak_decay_curve [--smoke] [--no-cluster] [--families lgbm xgb]
+R4-10 SPIKES (decision log 2026-11-16T11:07Z, round-4 pre-registration; values, no branch).
+(i) Leak length by scenario class: arm A's predictions re-aggregated by the three-class label
+of each row's scenario (no-event, natural, attack; read off the row-aligned triple and
+multiclass releases). A block holds one scenario, so a class subset holds one true label and
+its macro-F1 is degenerate; the per-class statistic is the share of the class's test rows
+predicted correctly (attack recall, natural and no-event specificity on the binary task),
+fitted per gap with the same rule (matched set, gaps 1..20, the same exponential). (ii)
+`--variant triple` runs the whole instrument -- arms, controls, verdict code -- on the
+three-class release. Anchor (blocking, binary only): every family's arm-A tau and matched curve
+equal the archived N-DECAY-2b run exactly. XGBoost's fit depends on its thread count and the
+archive ran unpinned on 24 cores, so XGBoost fits in its own process at 24 threads
+(--family-threads xgb=24, ruling 2026-11-16T13:05Z item 4) and its anchor blocks too; every
+other family runs at --threads. At another XGBoost count its anchor is reported, not blocking.
+Arm-A predictions are saved (arm_a_predictions.npz) so later re-aggregations need no refit.
+
+Run:  uv run python -m experiments.run_leak_decay_curve --variant binary --threads 4 --workers 1
+      [--smoke] [--no-cluster] [--families lgbm xgb]
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
-import numpy as np
-from scipy.optimize import curve_fit
-from scipy.stats import spearmanr
-from sklearn.metrics import f1_score
+from experiments.family_threads import THREAD_VARS
 
-from experiments.run_cluster_split_control import build_clusters, cluster_splits
-from experiments.run_group_split_control import group_splits, reconstruct_groups
-from experiments.run_leak_rate_families import tuned_full_params
-from experiments.run_temporal_split import load_blocks, positional_splits
-from qgridbench.data.preprocess import load_processed
-from qgridbench.eval.baselines import trivial_baselines
-from qgridbench.features.reduce import build_preprocessor
-from qgridbench.models.classical.zoo import build, fit_model
-from qgridbench.utils.run_tracking import RunDir, get_logger
-from qgridbench.utils.seeding import set_all_seeds
+_pre = argparse.ArgumentParser(add_help=False)
+_pre.add_argument("--threads", type=int, default=4)
+THREADS = _pre.parse_known_args(sys.argv[1:])[0].threads
+if __name__ == "__main__":  # pin before numpy loads; importers (the gas runner) keep their own
+    for _var in THREAD_VARS:
+        os.environ[_var] = str(THREADS)
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import numpy as np  # noqa: E402
+import optuna  # noqa: E402
+import pandas as pd  # noqa: E402
+import psutil  # noqa: E402
+from scipy.optimize import curve_fit  # noqa: E402
+from scipy.stats import spearmanr  # noqa: E402
+from sklearn.metrics import f1_score  # noqa: E402
+
+from experiments.family_threads import (  # noqa: E402
+    check_thread_env,
+    parse_family_threads,
+    run_grouped,
+)
+from experiments.run_cluster_split_control import build_clusters, cluster_splits  # noqa: E402
+from experiments.run_file_tail_split import load_rows  # noqa: E402
+from experiments.run_group_split_control import group_splits  # noqa: E402
+from experiments.run_temporal_split import positional_splits  # noqa: E402
+from qgridbench.data.preprocess import load_processed  # noqa: E402
+from qgridbench.data.validate import load_variant_frames  # noqa: E402
+from qgridbench.eval.baselines import trivial_baselines  # noqa: E402
+from qgridbench.features.reduce import build_preprocessor  # noqa: E402
+from qgridbench.models.classical.zoo import build, fit_model  # noqa: E402
+from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml  # noqa: E402
+from qgridbench.utils.seeding import set_all_seeds  # noqa: E402
 
 log = get_logger(__name__)
 
-VARIANT = "binary"
+VARIANTS = ("binary", "triple")
+ANCHOR_RUN = "20260915T190906Z_leak_decay_curve_binary"  # N-DECAY-2b (arm A as in 2's 190226Z)
+ANCHOR_THREADS = 24  # the archive ran unpinned on a 24-core machine (its compute_env.json)
+TRIPLE_ARCHIVE_RUN = "20261031T181540Z_file_tail_split_triple"  # R and T0 scored on triple
+MEM_FRACTION = 0.8
+UNIT_RSS_GB = 1.2  # one process holding the rows and fitting arm A (4-thread probe, R4-10)
 SEED = 0
 BAND = (0.2, 0.8)  # the middle 60% of every block trains (arm A/B/D)
 MIDDLE = (0.4, 0.6)  # the middle 20% of every block tests (arm C, diagnostic)
@@ -172,12 +218,23 @@ def interleave_split(block: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return train, test
 
 
-def fit_predict(family: str, train_mask: np.ndarray, X: np.ndarray, y: np.ndarray, params: dict):
-    """Tuned full-feature model on the train rows; predictions for every other row."""
+def fit_predict(
+    family: str,
+    train_mask: np.ndarray,
+    X: np.ndarray,
+    y: np.ndarray,
+    params: dict,
+    n_jobs: int | None = None,
+):
+    """Tuned full-feature model on the train rows; predictions for every other row.
+
+    `n_jobs` overrides the estimator's thread count (the zoo's -1 otherwise)."""
     pipe = build_preprocessor("full", n_components=None, seed=SEED)
     Ztr = pipe.fit_transform(X[train_mask])
     set_all_seeds(SEED)
     est = build(family, params, SEED)
+    if n_jobs is not None:
+        est.set_params(n_jobs=n_jobs)
     fit_model(family, est, Ztr, y[train_mask])
     pred = np.full(len(y), -1, dtype=np.int64)
     pred[~train_mask] = est.predict(pipe.transform(X[~train_mask]))
@@ -229,17 +286,224 @@ def permutation_null_range(pred, y, gap, test_mask, rng: np.random.Generator) ->
     }
 
 
-def fit_decay(pts: list[dict]) -> dict:
+def per_gap_class_curve(
+    pred, y, gap, test_mask, max_gap: int | None = None, min_rows: int = MIN_ROWS
+) -> list[dict]:
+    """R4-10 (i): per-gap share of `test_mask` rows predicted correctly.
+
+    `test_mask` selects one scenario class, whose rows share one true label in the binary task,
+    so this is that class's recall (attack) or specificity (natural, no-event). The gap
+    population rule is per_gap_curve's (MIN_ROWS test rows per gap); `min_rows=1` gives the
+    unfiltered diagnostic curve of a class too small for the rule.
+    """
+    out = []
+    gs = gap[test_mask]
+    for g in np.unique(gs[np.isfinite(gs)]).astype(int):
+        if max_gap is not None and g > max_gap:
+            break
+        sel = test_mask & (gap == g)
+        n = int(sel.sum())
+        if n < min_rows:
+            continue
+        out.append({"gap": int(g), "n": n, "accuracy": float((pred[sel] == y[sel]).mean())})
+    return out
+
+
+def scenario_class_map() -> dict[str, str]:
+    """Scenario marker -> three-class label, read off the row-aligned triple and multiclass
+    releases; fails loud if one marker carries two labels."""
+    label_col = load_yaml(REPO_ROOT / "configs" / "data.yaml")["schema"]["label_column"]
+    tri, multi = load_variant_frames("triple"), load_variant_frames("multiclass")
+    if [len(f) for f in tri] != [len(m) for m in multi]:
+        raise SystemExit("triple and multiclass releases are not row-aligned")
+    pairs = pd.DataFrame(
+        {
+            "scen": np.concatenate([m[label_col].astype(str).to_numpy() for m in multi]),
+            "cls": np.concatenate([f[label_col].astype(str).to_numpy() for f in tri]),
+        }
+    ).drop_duplicates()
+    if pairs["scen"].duplicated().any():
+        raise SystemExit(f"scenario markers with two three-class labels: {pairs}")
+    return dict(zip(pairs["scen"], pairs["cls"], strict=True))
+
+
+def row_classes(variant: str, y: np.ndarray, scen: np.ndarray) -> np.ndarray:
+    """Three-class label name per row; checked against the variant's own labels."""
+    labels = load_yaml(REPO_ROOT / "configs" / "data.yaml")["labels"]
+    cmap = scenario_class_map()
+    cls = np.array([cmap[s] for s in scen])
+    if variant == "binary":
+        expect = np.array([labels["binary"]["Attack" if c == "Attack" else "Natural"] for c in cls])
+    else:
+        expect = np.array([labels[variant][c] for c in cls])
+    if not np.array_equal(expect, y):
+        raise SystemExit(f"{variant}: scenario classes disagree with the row labels")
+    return cls
+
+
+def archived_scores(variant: str) -> dict[str, float | None]:
+    """Archived scores of the prediction-table constructions; None where none was scored."""
+    if variant == "binary":
+        return dict(ARCHIVED)
+    arms = json.loads(
+        (REPO_ROOT / "results" / "runs" / TRIPLE_ARCHIVE_RUN / "results.json").read_text()
+    )["arms"]
+    got = {a["arm"]: a["macro_f1"] for a in arms}
+    out: dict[str, float | None] = dict.fromkeys(ARCHIVED)
+    out["R row-level"] = got["R row-level"]
+    out["T0 ordered"] = got["T0 temporal"]  # positional_splits(block, "ordered"), same seed
+    return out
+
+
+def tuned_params(family: str, variant: str) -> dict:
+    """The published full-feature Optuna winner for one family and variant."""
+    name = f"cls_{family}_{variant}_full"
+    db = (REPO_ROOT / "results" / f"optuna_{name}.db").as_posix()
+    return optuna.load_study(study_name=name, storage=f"sqlite:///{db}").best_params
+
+
+def anchor_check(
+    fits: dict, curves: dict, families: list[str], family_threads: dict[str, int]
+) -> dict:
+    """Binary arm A against the archived N-DECAY-2b run: exact tau and exact matched curve.
+
+    Blocking for every family fitted at a count that reproduces the archive. LightGBM
+    reproduces at any count; XGBoost only at the archive's 24 (ruling 2026-11-16T13:05Z,
+    item 4), so XGBoost at another count is reported, not raised.
+    """
+    root = REPO_ROOT / "results" / "runs" / ANCHOR_RUN
+    arch = json.loads((root / "results.json").read_text())
+    out = {}
+    for fam in families:
+        tau, tau_arch = (
+            fits[f"A_{fam}"]["tau_released_rows"],
+            arch["fits"][f"A_{fam}"]["tau_released_rows"],
+        )
+        exact = bool(
+            tau == tau_arch and curves[f"A_{fam}_matched"] == arch["curves"][f"A_{fam}_matched"]
+        )
+        threads = family_threads.get(fam, THREADS)
+        blocking = not (fam == "xgb" and threads != ANCHOR_THREADS)
+        out[fam] = {
+            "tau": tau,
+            "tau_archived": tau_arch,
+            "exact": exact,
+            "blocking": blocking,
+            "threads": threads,
+            "archive_threads": ANCHOR_THREADS,
+        }
+        log.info("ANCHOR %s: %s", fam, out[fam])
+        if blocking and not exact:
+            raise SystemExit(f"ANCHOR FAILED ({fam}): tau {tau!r} vs archived {tau_arch!r}")
+    return out
+
+
+def _peak_rss_gb() -> float:
+    mi = psutil.Process().memory_info()
+    if sys.platform == "win32":
+        return mi.peak_wset / 2**30
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
+
+
+def memory_guard(workers: int, rss_gb: float) -> dict:
+    avail = psutil.virtual_memory().available / 2**30
+    out = {"workers": workers, "unit_rss_gb": rss_gb, "available_gb": avail}
+    log.info("memory: %d x %.2f GB vs %.2f GB available", workers, rss_gb, avail)
+    if workers * rss_gb > MEM_FRACTION * avail:
+        raise MemoryError(f"{workers} x {rss_gb} GB > {MEM_FRACTION:.0%} of {avail:.1f} GB free")
+    return out
+
+
+_W: dict = {}
+
+
+def _init_worker(threads: int, X: np.ndarray, y: np.ndarray, params: dict, ft: dict) -> None:
+    check_thread_env(threads)
+    _W.update(X=X, y=y, params=params, family_threads=ft)
+
+
+def _fit_unit(unit: tuple) -> tuple:
+    """One independent fit: (key, family, train_mask) -> (key, predictions, wall s, peak GB)."""
+    key, fam, train_mask = unit
+    t = time.perf_counter()
+    n_jobs = _W["family_threads"].get(fam)
+    pred = fit_predict(fam, train_mask, _W["X"], _W["y"], _W["params"][fam], n_jobs)
+    return key, pred, time.perf_counter() - t, _peak_rss_gb()
+
+
+def unit_cache_path(cache_dir, unit: tuple, y: np.ndarray, params: dict, threads: int) -> Path:
+    """Resume file of one fit, named by everything its predictions depend on: the arm, the
+    family's tuned parameters, the train mask, the labels, the seed and the thread count."""
+    key, fam, train_mask = unit
+    h = hashlib.sha256()
+    h.update(json.dumps([fam, params[fam], SEED, threads], sort_keys=True).encode())
+    h.update(np.packbits(train_mask).tobytes())
+    h.update(np.ascontiguousarray(y).tobytes())
+    return cache_dir / f"{'_'.join(map(str, key))}_{h.hexdigest()[:16]}.npz"
+
+
+def run_fits(
+    units: list[tuple], X, y, params, workers: int, cache_dir, family_threads: dict[str, int]
+) -> dict:
+    """Every fit is independent (its own seed); one process per worker, results keyed.
+
+    A family in `family_threads` fits in its own spawned process at that thread count; the
+    rest run at --threads. Each finished fit is written to `cache_dir` at once, and a fit
+    whose file exists is read back instead of refitted, so a stopped run resumes at its next
+    unfinished arm.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def threads_of(u: tuple) -> int:
+        return family_threads.get(u[1], THREADS)
+
+    done, todo, files = {}, [], {}
+    for u in units:
+        f = unit_cache_path(cache_dir, u, y, params, threads_of(u))
+        if f.exists():
+            z = np.load(f)
+            done[u[0]] = (z["pred"], float(z["wall_s"]), float(z["peak_rss_gb"]))
+            log.info("fit %-12s resumed from %s", "/".join(map(str, u[0])), f.name)
+        else:
+            todo.append(u)
+            files[u[0]] = f
+
+    def keep(u: tuple, res: tuple) -> None:
+        key, pred, wall, rss = res
+        np.savez(files[key], pred=pred, wall_s=wall, peak_rss_gb=rss)
+        done[key] = (pred, wall, rss)
+        log.info(
+            "fit %-12s %.1f s | %d threads | peak RSS %.2f GB",
+            "/".join(map(str, key)),
+            wall,
+            threads_of(u),
+            rss,
+        )
+
+    run_grouped(
+        todo,
+        threads_of,
+        _fit_unit,
+        _init_worker,
+        (X, y, params, family_threads),
+        workers,
+        THREADS,
+        keep,
+    )
+    return {u[0]: done[u[0]] for u in units}
+
+
+def fit_decay(pts: list[dict], key: str = "macro_f1") -> dict:
     g = np.array([p["gap"] for p in pts], dtype=float)
-    f = np.array([p["macro_f1"] for p in pts])
+    f = np.array([p[key] for p in pts])
     w = np.array([p["n"] for p in pts], dtype=float)
 
     def model(gg, a, b, tau):
         return a + b * np.exp(-(gg - 1) / tau)
 
-    tail = np.mean(
-        [p["macro_f1"] for p in pts if ASYMPTOTE_GAPS[0] <= p["gap"] <= ASYMPTOTE_GAPS[1]]
-    )
+    tail = np.mean([p[key] for p in pts if ASYMPTOTE_GAPS[0] <= p["gap"] <= ASYMPTOTE_GAPS[1]])
     popt, _ = curve_fit(
         model,
         g,
@@ -250,7 +514,7 @@ def fit_decay(pts: list[dict]) -> dict:
         maxfev=20000,
     )
     resid = f - model(g, *popt)
-    within = [p["gap"] for p in pts if p["macro_f1"] - tail <= 0.02]
+    within = [p["gap"] for p in pts if p[key] - tail <= 0.02]
     return {
         "asymptote_fit": float(popt[0]),
         "amplitude_fit": float(popt[1]),
@@ -290,22 +554,34 @@ def main() -> None:
     ap.add_argument("--no-cluster", action="store_true", help="skip the cluster-split control")
     ap.add_argument("--cluster-partitions", type=int, default=2)
     ap.add_argument("--families", nargs="+", default=["lgbm", "xgb"])
+    ap.add_argument("--variant", choices=VARIANTS, default="binary")
+    ap.add_argument("--threads", type=int, default=4, help="BLAS/OpenMP threads per process")
+    ap.add_argument("--workers", type=int, default=1, help="processes fitting arms in parallel")
+    ap.add_argument(
+        "--family-threads",
+        nargs="*",
+        default=[f"xgb={ANCHOR_THREADS}"],
+        help="FAMILY=N: fit that family at N threads in its own process (default xgb=24, the "
+        "archive's count, so the XGBoost anchor is exact and blocking)",
+    )
     args = ap.parse_args()
     if args.families[0] != "lgbm":
         raise SystemExit("the first family must be lgbm: arms B, C and E are LightGBM-only")
+    variant = args.variant
+    family_threads = parse_family_threads(args.family_threads)
+    t_start = time.perf_counter()
 
-    X, y, block = load_blocks()
-    Xg, yg, gid = reconstruct_groups()
-    if X.shape != Xg.shape or not np.array_equal(y, yg):
-        raise SystemExit("block and group reconstructions disagree")
-    Xp, yp, splits_row = load_processed(VARIANT)
+    X, y, gid, scen, block = load_rows(variant)
+    Xp, yp, splits_row = load_processed(variant)
     if X.shape != Xp.shape or not np.array_equal(y, yp):
         raise SystemExit("block reconstruction misaligned with the processed artifact")
     splits_row = {k: np.asarray(v) for k, v in splits_row.items()}
+    cls = row_classes(variant, y, scen)
     n = len(y)
     pos_true = np.arange(n, dtype=np.int64)
     sizes = np.bincount(block)
     matched = sizes[block] >= MIN_BLOCK_MATCHED
+    classes = list(load_yaml(REPO_ROOT / "configs" / "data.yaml")["labels"]["triple"])
 
     tr_a, pos_a, side_a = band_split(block, np.random.default_rng(SEED), shuffled=False)
     tr_b, pos_b, _ = band_split(block, np.random.default_rng(SEED), shuffled=True)
@@ -358,11 +634,30 @@ def main() -> None:
             ce,
             f"| train frac {tr_e.mean():.3f} test frac {te_e.mean():.3f}",
         )
+        for c in classes:
+            cm = te_a & matched & (cls == c)
+            cc = {
+                int(g): int(k)
+                for g, k in zip(*np.unique(gap_a[cm], return_counts=True))
+                if np.isfinite(g) and g <= GAP_FIT
+            }
+            print(
+                f"SMOKE {variant} class {c}: blocks {len(np.unique(block[cls == c]))} "
+                f"(matched {len(np.unique(block[(cls == c) & matched]))}) | "
+                f"matched test rows per gap 1..{GAP_FIT}: {cc}"
+            )
+        print(f"SMOKE peak RSS {_peak_rss_gb():.2f} GB | {time.perf_counter() - t_start:.1f} s")
         return
 
-    params = {f: tuned_full_params(f) for f in args.families}
+    params = {f: tuned_params(f, variant) for f in args.families}
+    mem = memory_guard(args.workers, UNIT_RSS_GB)
     cfg = {
-        "variant": VARIANT,
+        "variant": variant,
+        "threads": THREADS,
+        "family_threads": family_threads,
+        "workers": args.workers,
+        "memory_guard": mem,
+        "classes": classes,
         "band": list(BAND),
         "middle": list(MIDDLE),
         "interleave": list(INTERLEAVE),
@@ -375,17 +670,51 @@ def main() -> None:
         "n_perm": N_PERM,
         "families": args.families,
         "seed": SEED,
-        "params_source": "optuna studies cls_<family>_binary_full (best_params)",
+        "params_source": f"optuna studies cls_<family>_{variant}_full (best_params)",
         "cluster_partitions": 0 if args.no_cluster else args.cluster_partitions,
+        "anchor_run": ANCHOR_RUN if variant == "binary" else None,
+        "archived_scores": archived_scores(variant),
         "preregistration": "decision log 2026-09-15T19:09Z "
-        "(N-DECAY-2b, amending 19:02Z and 18:52Z)",
+        "(N-DECAY-2b, amending 19:02Z and 18:52Z); R4-10 spikes 2026-11-16T11:07Z",
     }
-    with RunDir(f"leak_decay_curve_{VARIANT}", config=cfg, seeds=[SEED]) as run:
+    if args.no_cluster:
+        labels = None
+        cluster_stats = {}
+    else:
+        labels, cstats = build_clusters(X)
+        cluster_stats = {k: v for k, v in cstats.items() if isinstance(v, (int, float))}
+    cluster_parts = []
+    if labels is not None:
+        crng = np.random.default_rng(0)
+        cluster_parts = [cluster_splits(labels, crng) for _ in range(args.cluster_partitions)]
+    units = [(("A", fam), fam, tr_a) for fam in args.families]
+    units += [(("B", "lgbm"), "lgbm", tr_b), (("C", "lgbm"), "lgbm", tr_c)]
+    units += [(("E", "lgbm"), "lgbm", tr_e)]
+    for k, sp in enumerate(cluster_parts):
+        tm = np.zeros(n, dtype=bool)
+        tm[sp["train"]] = True
+        units.append((("cluster", k), "lgbm", tm))
+
+    with RunDir(f"leak_decay_curve_{variant}", config=cfg, seeds=[SEED]) as run:
         out: dict = {"curves": {}, "fits": {}}
-        preds = {}
+        fitted = run_fits(
+            units,
+            X,
+            y,
+            params,
+            args.workers,
+            REPO_ROOT / "models" / "leak_decay_curve" / variant,
+            family_threads,
+        )
+        preds = {key: v[0] for key, v in fitted.items()}
+        run.metrics.update(
+            {
+                "unit_wall_s": {"/".join(map(str, k)): v[1] for k, v in fitted.items()},
+                "unit_peak_rss_gb": {"/".join(map(str, k)): v[2] for k, v in fitted.items()},
+            }
+        )
         # ---- arm A per family ------------------------------------------------------------
         for fam in args.families:
-            preds[("A", fam)] = fit_predict(fam, tr_a, X, y, params[fam])
             out["curves"][f"A_{fam}_matched"] = per_gap_curve(
                 preds[("A", fam)], y, gap_a, te_a & matched, y[tr_a], GAP_FIT
             )
@@ -403,17 +732,60 @@ def main() -> None:
                     p["floor"],
                 )
             log.info("A %-4s fit: %s", fam, out["fits"][f"A_{fam}"])
+        anchor = None
+        if variant == "binary":
+            run.write_json("results_partial.json", out)
+            anchor = anchor_check(out["fits"], out["curves"], args.families, family_threads)
+        np.savez_compressed(
+            run.path / "arm_a_predictions.npz",
+            **{f"pred_{fam}": preds[("A", fam)] for fam in args.families},
+            y=y,
+            gap=gap_a,
+            test=te_a,
+            matched=matched,
+            block=block,
+            cls=cls,
+        )
+        # ---- R4-10 (i): arm A re-aggregated by scenario class ----------------------------
+        out["class_curves"], out["class_fits"] = {}, {}
+        for fam in args.families:
+            for c in classes:
+                for scope, mask in (("matched", te_a & matched), ("all", te_a)):
+                    out["class_curves"][f"A_{fam}_{c}_{scope}"] = per_gap_class_curve(
+                        preds[("A", fam)],
+                        y,
+                        gap_a,
+                        mask & (cls == c),
+                        GAP_FIT if scope == "matched" else None,
+                    )
+                pts = out["class_curves"][f"A_{fam}_{c}_matched"]
+                if {p["gap"] for p in pts} >= set(range(1, GAP_FIT + 1)):
+                    out["class_fits"][f"A_{fam}_{c}"] = fit_decay(pts, key="accuracy")
+                else:
+                    # below the population rule: the fit is not the instrument's; the unfiltered
+                    # curve and its fit are kept as a labelled diagnostic, never as the tau
+                    raw = per_gap_class_curve(
+                        preds[("A", fam)], y, gap_a, te_a & matched & (cls == c), GAP_FIT, 1
+                    )
+                    out["class_curves"][f"A_{fam}_{c}_matched_unfiltered"] = raw
+                    out["class_fits"][f"A_{fam}_{c}"] = {
+                        "unsupported": f"gaps 1..{GAP_FIT} do not all reach {MIN_ROWS} "
+                        "matched test rows",
+                        "rows_per_gap": [p["n"] for p in raw],
+                        "diagnostic_fit_below_min_rows": fit_decay(raw, key="accuracy"),
+                    }
+                    log.warning(
+                        "class %s (%s): below the population rule on the matched set", c, fam
+                    )
+                log.info("A %-4s class %-8s fit: %s", fam, c, out["class_fits"][f"A_{fam}_{c}"])
         # ---- arm B (negative control), C (diagnostic), E (two-sided) ----------------------
-        preds[("B", "lgbm")] = fit_predict("lgbm", tr_b, X, y, params["lgbm"])
         out["curves"]["B_lgbm_matched"] = per_gap_curve(
             preds[("B", "lgbm")], y, gap_b, te_b & matched, y[tr_b], GAP_FIT
         )
         out["curves"]["B_lgbm_all"] = per_gap_curve(preds[("B", "lgbm")], y, gap_b, te_b, y[tr_b])
-        preds[("C", "lgbm")] = fit_predict("lgbm", tr_c, X, y, params["lgbm"])
         out["curves"]["C_lgbm_matched"] = per_gap_curve(
             preds[("C", "lgbm")], y, gap_c, te_c & matched, y[tr_c], GAP_H1
         )
-        preds[("E", "lgbm")] = fit_predict("lgbm", tr_e, X, y, params["lgbm"])
         out["curves"]["E_lgbm_matched"] = per_gap_curve(
             preds[("E", "lgbm")], y, gap_e, te_e & matched, y[tr_e], GAP_H1
         )
@@ -467,18 +839,20 @@ def main() -> None:
             "V reversed": rev,
             "whole-file p0": wf,
         }
+        archived = archived_scores(variant)
         tables = {"file_gap": {}, "block_gap": {}}
         for name, sp in arms.items():
             for key, unit in (("file_gap", gid), ("block_gap", block)):
                 r = predict_arm(sp["test"], sp["train"], unit, pos_true, curve_a, asym)
-                r["actual_archived"] = ARCHIVED[name]
-                r["abs_error"] = abs(r["predicted"] - ARCHIVED[name])
+                r["actual_archived"] = archived[name]
+                r["abs_error"] = (
+                    None if archived[name] is None else abs(r["predicted"] - archived[name])
+                )
                 tables[key][name] = r
             log.info(
-                "%-14s archived %.4f | file-gap pred %.4f (err %.3f) | "
-                "block-gap pred %.4f (err %.3f)",
+                "%-14s archived %s | file-gap pred %.4f (err %s) | block-gap pred %.4f (err %s)",
                 name,
-                ARCHIVED[name],
+                archived[name],
                 tables["file_gap"][name]["predicted"],
                 tables["file_gap"][name]["abs_error"],
                 tables["block_gap"][name]["predicted"],
@@ -487,33 +861,21 @@ def main() -> None:
 
         # ---- cluster split: regenerated, scored fresh, predicted (positive control) -------
         cluster = []
-        cluster_stats = {}
-        if not args.no_cluster:
-            labels, cstats = build_clusters(X)
-            cluster_stats = {k: v for k, v in cstats.items() if isinstance(v, (int, float))}
-            crng = np.random.default_rng(0)
-            for k in range(args.cluster_partitions):
-                sp = cluster_splits(labels, crng)
-                tm = np.zeros(n, dtype=bool)
-                tm[sp["train"]] = True
-                pred_c = fit_predict("lgbm", tm, X, y, params["lgbm"])
-                actual = float(f1_score(y[sp["test"]], pred_c[sp["test"]], average="macro"))
-                r = predict_arm(sp["test"], sp["train"], gid, pos_true, curve_a, asym)
-                r.update(
-                    {
-                        "partition": k,
-                        "actual_fresh": actual,
-                        "abs_error": abs(r["predicted"] - actual),
-                    }
-                )
-                cluster.append(r)
-                log.info(
-                    "cluster p%d predicted %.4f | fresh %.4f | err %.4f",
-                    k,
-                    r["predicted"],
-                    actual,
-                    r["abs_error"],
-                )
+        for k, sp in enumerate(cluster_parts):
+            pred_c = preds[("cluster", k)]
+            actual = float(f1_score(y[sp["test"]], pred_c[sp["test"]], average="macro"))
+            r = predict_arm(sp["test"], sp["train"], gid, pos_true, curve_a, asym)
+            r.update(
+                {"partition": k, "actual_fresh": actual, "abs_error": abs(r["predicted"] - actual)}
+            )
+            cluster.append(r)
+            log.info(
+                "cluster p%d predicted %.4f | fresh %.4f | err %.4f",
+                k,
+                r["predicted"],
+                actual,
+                r["abs_error"],
+            )
 
         # ---- controls and verdict ---------------------------------------------------------
         bpts = out["curves"]["B_lgbm_matched"]
@@ -581,21 +943,27 @@ def main() -> None:
             "kill_h3": kill_h3,
             "h4_length_belongs_to_data": h4,
             "prediction_max_abs_error_file_gap": max(
-                v["abs_error"] for v in tables["file_gap"].values()
+                v["abs_error"] for v in tables["file_gap"].values() if v["abs_error"] is not None
             ),
             "prediction_max_abs_error_block_gap": max(
-                v["abs_error"] for v in tables["block_gap"].values()
+                v["abs_error"] for v in tables["block_gap"].values() if v["abs_error"] is not None
             ),
             "prediction_max_abs_error_block_gap_excl_dense": max(
                 v["abs_error"]
                 for k, v in tables["block_gap"].items()
-                if k not in ("R row-level", "S shuffled")
+                if k not in ("R row-level", "S shuffled") and v["abs_error"] is not None
             ),
             "cluster_archived_mean": ARCHIVED_CLUSTER_MEAN,
+            "anchor": anchor,
+            "class_tau_released_rows": {
+                k: v.get("tau_released_rows") for k, v in out["class_fits"].items()
+            },
         }
         if not verdict["controls_pass"]:
             log.error("CONTROL FAILED (run VOID): negative=%s positive=%s", ctrl_neg, ctrl_pos)
-        run.metrics = verdict
+        run.metrics.update(verdict)
+        run.metrics["run_peak_rss_gb"] = _peak_rss_gb()
+        run.metrics["run_wall_s"] = time.perf_counter() - t_start
         run.write_json(
             "results.json",
             {

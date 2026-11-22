@@ -1,7 +1,7 @@
 # Adversarial robustness protocol. All attacks in standardized PRE-ENCODING space.
 threat_model:
   attacker_goal: "evasion of the detector (+ separate poisoning setting)"
-  knowledge: "white-box for differentiable (MLP, VQC); gray-box/transfer otherwise"
+  knowledge: "white-box for the MLP and the VQC under the shared PGD, and for both kernel machines through the kernel gradient; gray-box/transfer otherwise"
   capability: "L-inf bounded perturbation of standardized features"
 
 evasion:
@@ -17,7 +17,7 @@ evasion:
   pgd:
     n_steps: 20
     step_frac: 0.25
-  white_box_models: [mlp, vqc]        # differentiable
+  white_box_models: [mlp, vqc]        # the shared PGD is white-box for these two
   surrogate_model: "mlp"              # transfer source for trees / kernel SVMs
 
 transfer_matrix:
@@ -37,6 +37,13 @@ blackbox:
   init_eval: 20
   eval_subset: 100                    # sampled test points (query budget control)
 
+# HopSkipJump with supplied starting points (experiments/run_hopskipjump_restarts.py --start pool):
+# each restart draws this many training rows, asks the model for their labels (one query each)
+# and starts every input from a drawn row of another predicted class. Kept outside `blackbox`
+# so the default run's recorded settings do not change.
+blackbox_supplied_start:
+  pool_size: 200
+
 sensor_noise:                         # benign ablation (NOT adversarial); PMU realism
   snr_db: [30, 20, 10]                # 3 SNR levels
   # NOTE: dataset has no DER/solar telemetry -> noise is the honest proxy, not a DER claim
@@ -45,4 +52,4 @@ poisoning:
   label_flip_rates: [0.05, 0.10, 0.20]
 
 eval_subset_adv: 500                   # test points used for evasion curves (cost control)
-adv_seeds: [0, 1, 2]                   # evasion/noise seed protocol (accuracy runs keep 10)
+# Seeds are a runner argument (--seeds); the reported evasion runs use seeds 0 to 9.

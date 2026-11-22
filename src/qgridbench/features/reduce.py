@@ -23,15 +23,27 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 ANGLE_RANGE = (-np.pi, np.pi)
 
 
-def build_preprocessor(regime: str, n_components: int | None = None, seed: int = 0) -> Pipeline:
+def build_preprocessor(
+    regime: str, n_components: int | None = None, seed: int = 0, add_indicator: bool = False
+) -> Pipeline:
+    """`add_indicator=True` appends SimpleImputer's missing-value indicator columns (the
+    gas-pipeline missingness control, R4-12); the default is the shipped transform."""
     steps = [
-        ("impute", SimpleImputer(strategy="median")),
+        ("impute", SimpleImputer(strategy="median", add_indicator=add_indicator)),
         ("scale", StandardScaler()),
     ]
     if regime == "pca":
         if not n_components:
             raise ValueError("pca regime requires n_components")
-        steps.append(("pca", PCA(n_components=n_components, random_state=seed)))
+        # The solver is pinned (decision log 2026-11-18, R4-22 incident): under "auto", a wide
+        # input (fdia118_binary, 3456 x 726) gets the randomized solver, whose fit_transform
+        # returns the approximate U*S, so the train features differed from transform(train) by
+        # up to 0.27 while val and test went through transform. covariance_eigh is exact, its
+        # fit_transform equals transform, and "auto" already chose it for every other variant
+        # (bit-identical there).
+        steps.append(
+            ("pca", PCA(n_components=n_components, svd_solver="covariance_eigh", random_state=seed))
+        )
     elif regime != "full":
         raise ValueError(f"unknown regime '{regime}'")
     return Pipeline(steps)

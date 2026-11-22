@@ -31,6 +31,9 @@ import numpy as np
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.svm import SVC
 
+from experiments.exports import Exports
+from experiments.runner_guard import assert_clean_predictor
+from experiments.tuned_file import run_name
 from qgridbench.attacks.blackbox import hopskipjump_attack
 from qgridbench.attacks.evasion import fgsm, gaussian_sensor_noise, pgd
 from qgridbench.attacks.gradients import GradProvider
@@ -43,7 +46,7 @@ from qgridbench.models.classical.zoo import (
 )
 from qgridbench.models.quantum.qkernel import compute_states, fidelity_kernel
 from qgridbench.models.quantum.vqc import VQClassifier
-from qgridbench.protocol import kernel_subset, prepare_regime
+from qgridbench.protocol import best_params_path, kernel_subset, prepare_regime
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml, mlflow_log
 from qgridbench.utils.seeding import set_all_seeds, spawn_rng
 
@@ -116,6 +119,15 @@ class FittedZoo:
         proba, _latency = predict_proba_timed(m, X)
         return proba
 
+    def clean_proba(self, name, X, y):
+        """predict_proba on CLEAN rows, failing loud if the model is constant or non-finite there.
+
+        Clean-evaluation call sites only; attacked or perturbed rows go through predict_proba
+        (see experiments/runner_guard.py)."""
+        proba = self.predict_proba(name, X)
+        assert_clean_predictor(name, y, proba, proba.argmax(1))
+        return proba
+
     def grad_provider(self, name):
         if name == "mlp":
             return GradProvider(self.models["mlp"], "mlp")
@@ -151,7 +163,19 @@ def _f1(y, proba):
     return float(f1_score(y, proba.argmax(1), average="macro"))
 
 
-def evasion_and_transfer(zoo, X, y, cfg_adv, rng, scale):
+def _rec(ex, seed, pos, y, cond, model, proba, X=None, source=None):
+    """macro-F1 of one prediction block; with `ex` (experiments/exports.py) it is recorded, and
+    X under `source` is recorded as a crafted input. Without `ex` it is plain _f1."""
+    f1 = _f1(y, proba)
+    if ex is not None:
+        if X is not None:
+            ex.crafted_input(seed, cond, source, X)
+        ex.predictions(seed, cond, model, proba, y, pos)
+        ex.metric(seed, model, cond, "macro_f1", f1)
+    return f1
+
+
+def evasion_and_transfer(zoo, X, y, cfg_adv, rng, scale, ex=None, seed=None, pos=None):
     """Returns clean F1, per-epsilon degradation, and source x target matrix (at max eps).
 
     `scale` is the per-feature train std: epsilon is a budget in STANDARDIZED
@@ -159,7 +183,7 @@ def evasion_and_transfer(zoo, X, y, cfg_adv, rng, scale):
     attacks/evasion.py SCALE CONTRACT)."""
     families = CLASSICAL + ["qsvm", "vqc"]
     eps_grid = cfg_adv["evasion"]["epsilons"]
-    clean = {f: _f1(y, zoo.predict_proba(f, X)) for f in families}
+    clean = {f: _rec(ex, seed, pos, y, "clean", f, zoo.clean_proba(f, X, y)) for f in families}
 
     # white-box crafted sets per differentiable source, per epsilon
     curves = {f: {"clean": clean[f], "fgsm": {}, "pgd": {}} for f in families}
@@ -182,10 +206,17 @@ def evasion_and_transfer(zoo, X, y, cfg_adv, rng, scale):
                 step_frac=cfg_adv["evasion"]["pgd"]["step_frac"],
                 rng=rng,
             )
-            curves[src]["fgsm"][eps] = _f1(y, zoo.predict_proba(src, X_fgsm))
-            curves[src]["pgd"][eps] = _f1(y, zoo.predict_proba(src, X_pgd))
+            c_f, c_p = f"fgsm_{src}@{eps}", f"pgd_{src}@{eps}"
+            p_f, p_p = zoo.predict_proba(src, X_fgsm), zoo.predict_proba(src, X_pgd)
+            curves[src]["fgsm"][eps] = _rec(ex, seed, pos, y, c_f, src, p_f, X_fgsm, src)
+            curves[src]["pgd"][eps] = _rec(ex, seed, pos, y, c_p, src, p_p, X_pgd, src)
             if eps == max_eps:
-                transfer[src] = {t: _f1(y, zoo.predict_proba(t, X_pgd)) for t in families}
+                transfer[src] = {
+                    t: _rec(ex, seed, pos, y, c_p, t, zoo.predict_proba(t, X_pgd))
+                    if t != src
+                    else curves[src]["pgd"][eps]
+                    for t in families
+                }
 
     # non-differentiable families: transfer from MLP surrogate (their curves)
     surrogate = cfg_adv["evasion"]["surrogate_model"]
@@ -202,30 +233,32 @@ def evasion_and_transfer(zoo, X, y, cfg_adv, rng, scale):
             rng=rng,
         )
         X_fgsm = fgsm(gp, X, y, eps, scale)
+        c_p, c_f = f"pgd_{surrogate}_surrogate@{eps}", f"fgsm_{surrogate}_surrogate@{eps}"
+        if ex is not None:
+            ex.crafted_input(seed, c_p, surrogate, X_pgd)
+            ex.crafted_input(seed, c_f, surrogate, X_fgsm)
         for t in families:
             if t in sources:
                 continue
-            curves[t]["pgd"][eps] = _f1(y, zoo.predict_proba(t, X_pgd))
-            curves[t]["fgsm"][eps] = _f1(y, zoo.predict_proba(t, X_fgsm))
-    transfer[f"{surrogate}_surrogate"] = {
-        t: _f1(
+            curves[t]["pgd"][eps] = _rec(ex, seed, pos, y, c_p, t, zoo.predict_proba(t, X_pgd))
+            curves[t]["fgsm"][eps] = _rec(ex, seed, pos, y, c_f, t, zoo.predict_proba(t, X_fgsm))
+    # one fresh PGD draw per target, in family order (the published rng consumption)
+    cond = f"pgd_{surrogate}_surrogate_transfer@{max_eps}"
+    transfer[f"{surrogate}_surrogate"] = {}
+    for t in families:
+        X_t = pgd(
+            gp,
+            X,
             y,
-            zoo.predict_proba(
-                t,
-                pgd(
-                    gp,
-                    X,
-                    y,
-                    max_eps,
-                    scale,
-                    n_steps=cfg_adv["evasion"]["pgd"]["n_steps"],
-                    step_frac=cfg_adv["evasion"]["pgd"]["step_frac"],
-                    rng=rng,
-                ),
-            ),
+            max_eps,
+            scale,
+            n_steps=cfg_adv["evasion"]["pgd"]["n_steps"],
+            step_frac=cfg_adv["evasion"]["pgd"]["step_frac"],
+            rng=rng,
         )
-        for t in families
-    }
+        transfer[f"{surrogate}_surrogate"][t] = _rec(
+            ex, seed, pos, y, cond, t, zoo.predict_proba(t, X_t), X_t, f"{surrogate}|for_{t}"
+        )
     return {"clean": clean, "curves": curves, "transfer_matrix": transfer}
 
 
@@ -262,7 +295,7 @@ def blackbox(zoo, X, y, cfg_adv, scale, families=None, on_family=None):
             Xe = np.where((dist <= e)[:, None], Xa, Xc)
             f1_at_eps[str(e)] = _f1(yc, zoo.predict_proba(f, Xe))
         out[f] = {
-            "clean_f1": _f1(yc, zoo.predict_proba(f, Xc)),
+            "clean_f1": _f1(yc, zoo.clean_proba(f, Xc, yc)),
             "adv_f1": _f1(yc, zoo.predict_proba(f, Xa)),  # unbounded distortion
             "f1_at_eps": f1_at_eps,
             "median_linf_distortion": float(np.median(dist)),
@@ -283,7 +316,9 @@ def blackbox(zoo, X, y, cfg_adv, scale, families=None, on_family=None):
     return out
 
 
-def random_perturbation_control(zoo, X, y, cfg_adv, rng, scale, n_draws=3):
+def random_perturbation_control(
+    zoo, X, y, cfg_adv, rng, scale, n_draws=3, ex=None, seed=None, pos=None
+):
     """REQUIRED control for the black-box table — never report one without the other.
 
     HopSkipJump is a MINIMUM-DISTORTION attack: it starts from a random adversarial
@@ -303,7 +338,10 @@ def random_perturbation_control(zoo, X, y, cfg_adv, rng, scale, n_draws=3):
     """
     families = CLASSICAL + ["qsvm", "vqc"]
     radii = cfg_adv["evasion"]["epsilons"]
-    base_proba = {f: zoo.predict_proba(f, X) for f in families}
+    base_proba = {f: zoo.clean_proba(f, X, y) for f in families}
+    if ex is not None:  # base predictions under their own name: "clean" belongs to evasion
+        for f in families:
+            _rec(ex, seed, pos, y, "random_base", f, base_proba[f])
     base_pred = {f: p.argmax(1) for f, p in base_proba.items()}
     base_margin = {f: float(np.abs(p[:, 1] - 0.5).mean()) for f, p in base_proba.items()}
 
@@ -311,12 +349,18 @@ def random_perturbation_control(zoo, X, y, cfg_adv, rng, scale, n_draws=3):
     for r in radii:
         flips = {f: [] for f in families}
         margins = {f: [] for f in families}
-        for _ in range(n_draws):
+        for k in range(n_draws):
             d = rng.standard_normal(X.shape)
             d /= np.abs(d).max(axis=1, keepdims=True)  # L-inf normalised direction
             Xp = X + r * scale * d
+            cond = f"random@{r}|draw{k}"
+            if ex is not None:
+                ex.crafted_input(seed, cond, "random", Xp)
             for f in families:
                 proba = zoo.predict_proba(f, Xp)
+                if ex is not None:
+                    _rec(ex, seed, pos, y, cond, f, proba)
+                    ex.metric(seed, f, cond, "flip_rate", (proba.argmax(1) != base_pred[f]).mean())
                 flips[f].append(float((proba.argmax(1) != base_pred[f]).mean()))
                 margins[f].append(float(np.abs(proba[:, 1] - 0.5).mean()))
         for f in families:
@@ -329,28 +373,44 @@ def random_perturbation_control(zoo, X, y, cfg_adv, rng, scale, n_draws=3):
     return out
 
 
-def sensor_noise(zoo, X, y, cfg_adv, rng, scale):
+def sensor_noise(zoo, X, y, cfg_adv, rng, scale, ex=None, seed=None, pos=None):
     families = CLASSICAL + ["qsvm", "vqc"]
     out = {f: {} for f in families}
     for snr in cfg_adv["sensor_noise"]["snr_db"]:
         Xn = gaussian_sensor_noise(X, snr, rng, scale)
+        cond = f"noise_snr{snr}"
+        if ex is not None:
+            ex.crafted_input(seed, cond, "gaussian_noise", Xn)
         for f in families:
-            out[f][snr] = _f1(y, zoo.predict_proba(f, Xn))
+            out[f][snr] = _rec(ex, seed, pos, y, cond, f, zoo.predict_proba(f, Xn))
     return out
 
 
-def poisoning(reg, encoding, n_qubits, cfg_adv, subset_cap, best_params, seed):
+def poisoning(reg, encoding, n_qubits, cfg_adv, subset_cap, best_params, seed, ex=None):
     """Flip training labels, refit each family, measure clean-test degradation."""
     out = {}
     for rate in [0.0] + cfg_adv["poisoning"]["label_flip_rates"]:
-        rng = spawn_rng(seed, f"poison_{rate}")
+        rng = spawn_rng(seed, ex.stream(f"poison_{rate}") if ex else f"poison_{rate}")
         reg2 = reg
         sub = kernel_subset(reg2, subset_cap, seed=0)
         y_flipped = flip_labels(reg2.y["train"][sub], rate, rng)
         reg_poisoned = _reg_with_labels(reg2, sub, y_flipped)
         zoo = FittedZoo(reg_poisoned, encoding, n_qubits, seed, subset_cap, best_params)
         Xte, yte = reg.X["test"], reg.y["test"]
-        out[rate] = {f: _f1(yte, zoo.predict_proba(f, Xte)) for f in CLASSICAL + ["qsvm", "vqc"]}
+        # rate 0 is the clean fit; a poisoned model collapsing to one class is a measured result
+        pos = np.arange(len(yte))
+        out[rate] = {
+            f: _rec(
+                ex,
+                seed,
+                pos,
+                yte,
+                f"poison@{rate}",
+                f,
+                zoo.clean_proba(f, Xte, yte) if rate == 0.0 else zoo.predict_proba(f, Xte),
+            )
+            for f in CLASSICAL + ["qsvm", "vqc"]
+        }
     return out
 
 
@@ -375,7 +435,14 @@ def main():
     ap.add_argument("--qubits", type=int, default=8)
     ap.add_argument("--encoding", default="angle_ry")
     ap.add_argument("--seeds", type=int, nargs="*", default=None)
-    ap.add_argument("--best-params", default=None, help="JSON file of tuned params per family")
+    ap.add_argument(
+        "--best-params",
+        default=None,
+        help="tuned-parameter JSON; default: the variant's own file (protocol.best_params_path)",
+    )
+    ap.add_argument(
+        "--run-tag", default=None, help="suffix for the run directory name (default: none)"
+    )
     ap.add_argument("--skip-blackbox", action="store_true")
     ap.add_argument(
         "--bb-families",
@@ -407,7 +474,11 @@ def main():
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
     seeds = args.seeds or cfg_c["evaluation"]["seeds"]
     subset_cap = cfg_q["qkernel"]["subset_cap"]
-    best_params = json.loads(open(args.best_params).read()) if args.best_params else {}
+    args.best_params = (
+        args.best_params
+        or best_params_path(args.variant, args.qubits).relative_to(REPO_ROOT).as_posix()
+    )
+    best_params = json.loads((REPO_ROOT / args.best_params).read_text())
 
     tag = f"{args.variant}_q{args.qubits}"
     bb_dir = REPO_ROOT / "results" / f"blackbox_{tag}"
@@ -450,24 +521,40 @@ def main():
         reg.y["test"].mean(),
     )
 
-    name = f"adversarial_{tag}" + ("" if len(do) > 1 else f"_{next(iter(do))}")
+    name = run_name(
+        f"adversarial_{tag}" + ("" if len(do) > 1 else f"_{next(iter(do))}"), args.run_tag
+    )
     with RunDir(name, config={**vars(args), "stages": sorted(do)}, seeds=seeds) as run:
         per_seed = []
+        ex = Exports(args.variant, args.best_params)
         for s in seeds:
-            rng = spawn_rng(s, "adv")
+            rng = spawn_rng(s, ex.stream("adv"))
             zoo = FittedZoo(reg, args.encoding, args.qubits, s, subset_cap, best_params)
             Xte, yte = reg.X["test"][ev_idx], reg.y["test"][ev_idx]
             res = {}
             if "evasion" in do:
-                res["evasion"] = evasion_and_transfer(zoo, Xte, yte, cfg_adv, rng, scale)
+                res["evasion"] = evasion_and_transfer(
+                    zoo, Xte, yte, cfg_adv, rng, scale, ex, s, ev_idx
+                )
             if "noise" in do:
-                res["sensor_noise"] = sensor_noise(zoo, Xte, yte, cfg_adv, rng, scale)
+                res["sensor_noise"] = sensor_noise(
+                    zoo, Xte, yte, cfg_adv, rng, scale, ex, s, ev_idx
+                )
             # control for the black-box table; cheap (predictions only, no attack)
             if "random" in do:
                 res["random_control"] = random_perturbation_control(
-                    zoo, reg.X["test"][bb_idx], reg.y["test"][bb_idx], cfg_adv, rng, scale
+                    zoo,
+                    reg.X["test"][bb_idx],
+                    reg.y["test"][bb_idx],
+                    cfg_adv,
+                    rng,
+                    scale,
+                    ex=ex,
+                    seed=s,
+                    pos=bb_idx,
                 )
-            # HopSkipJump is deterministic given (model, seed) and expensive:
+            # HopSkipJump is expensive, and the library draws its starting point from an unseeded
+            # generator, so this single run is one draw (restarts: run_hopskipjump_restarts.py):
             # run once at the first seed; evasion/noise curves carry the seed spread
             if "blackbox" in do and s == seeds[0]:
                 bb_dir.mkdir(parents=True, exist_ok=True)
@@ -493,18 +580,26 @@ def main():
                 or sorted(res),
             )
         poison = (
-            poisoning(reg, args.encoding, args.qubits, cfg_adv, subset_cap, best_params, seeds[0])
+            poisoning(
+                reg, args.encoding, args.qubits, cfg_adv, subset_cap, best_params, seeds[0], ex
+            )
             if "poison" in do
             else None
         )
+        ex.write(run.path)
         run.write_json("results.json", {"per_seed": per_seed, "poisoning": poison})
         mlflow_log(
             f"adversarial_{tag}",
             vars(args),
-            {f"clean_{k}": v for k, v in per_seed[0]["evasion"]["clean"].items()},
+            clean_metrics_for_mlflow(per_seed),
             tags={"phase": "adversarial"},
         )
         print(f"-> {run.path}")
+
+
+def clean_metrics_for_mlflow(per_seed: list[dict]) -> dict:
+    """First seed's clean evasion metrics; empty for a run with no evasion (`--only random`)."""
+    return {f"clean_{k}": v for k, v in per_seed[0].get("evasion", {}).get("clean", {}).items()}
 
 
 if __name__ == "__main__":

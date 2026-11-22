@@ -98,6 +98,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from experiments.runner_guard import assert_clean_predictor
 from qgridbench.data.validate import load_variant_frames
 from qgridbench.models.classical.zoo import stratified_cap
 from qgridbench.utils.run_tracking import REPO_ROOT, RunDir, get_logger, load_yaml
@@ -314,6 +315,7 @@ def _body(run, rng):
     primary = {}
     for nm in names:
         x = [preds[f][nm] for f in files]
+        assert_clean_predictor(nm, yv, x, x)
         rho = spearmanr(x, yv).statistic
         p95, pmean = perm_null(x, yv, rng)
         primary[nm] = {

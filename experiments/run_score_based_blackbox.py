@@ -166,7 +166,7 @@ def main() -> None:
             )
             cell = {"seed": s, "clean": {}, "nes": {}, "random": {}, "budget": {}}
             for m in models:
-                cell["clean"][m] = _f1(yte, zoo.predict_proba(m, Xte))
+                cell["clean"][m] = _f1(yte, zoo.clean_proba(m, Xte, yte))
             for e in args.epsilons:
                 ek = str(e)
                 cell["nes"][ek], cell["random"][ek] = {}, {}

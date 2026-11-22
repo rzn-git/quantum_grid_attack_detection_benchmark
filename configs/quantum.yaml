@@ -87,6 +87,28 @@ ablations:
     eval_subset: 100                # matches the Phase-4 random-perturbation control
     n_draws: 3
     svm_C_grid: [0.1, 1.0, 10.0, 100.0, 1000.0]
+  # R4-17(a): peakedness-aware co-peak reading of the archived fragility arms (no refits).
+  # Thresholds fixed by the round-4 part-B amendment (decision log 2026-11-16T11:34Z).
+  copeak_rescore:
+    eps: "0.5"                      # flip-rate radius read from each archived profile
+    tau: 0.065                      # noise floor: 2*sqrt(2)*s/sqrt(3), s = pooled 3-draw SD
+    degeneracy_margin: 0.05         # cell excluded when |clean F1 - constant floor| <= this
+    argmax_tie: 0.01                # clean-F1 gap under which the accuracy argmax is a tie
+    legacy_ratio_tol: 1.0e-9        # recomputed ratio vs the archived ratio fields
+    tuned_params: results/adv_best_params_binary_q8.json   # deployed b* = nearest qk_bw
+    arms:                           # archived profiles under results/runs/
+      deployed_zz: {path: 20260814T002646Z_ablations_binary_q8/bandwidth_fragility.json}
+      classical_rbf:
+        path: 20260815T053945Z_ablations_binary_q8/bandwidth_fragility_classical.json
+        axis: gamma_mult
+        near_constant_end: 100.0    # P16a's collapsed gamma=419 cell
+      p17a_bounded: {path: 20260815T065058Z_ablations_binary_q8/bandwidth_fragility_bounded.json}
+      p17b_entangle:
+        path: 20260815T071110Z_ablations_binary_q8/entanglement_isolation.json
+        group: entangle_strength
+      p17c_rotation:
+        path: 20260815T090733Z_ablations_binary_q8/rotation_structure_isolation.json
+        group: n_reps
   # Direct dequantization test: prediction agreement (raw + Cohen's kappa) between
   # each tuned quantum-kernel SVM and a best-effort classical RBF SVM, on val.
   dequantization:

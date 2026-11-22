@@ -19,7 +19,7 @@ H2 (discrete channels): the preimage demands non-integer changes to the discrete
     defence and the limitation is about coupling, not about integrality. If it recovers,
     the reported degradation is optimistic and must be scoped.
 
-Run: python -m experiments.run_physical_realizability
+Run: python -m experiments.run_physical_realizability [--best-params FILE] [--run-tag TAG]
 
 Graduated from tmp/ because the Discussion reports its numbers: the raw-space footprint
 (109 of 128 channels moved) and the rounding test's 0.016 macro-F1 recovery are the
@@ -30,12 +30,15 @@ match.
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import numpy as np
 from sklearn.metrics import f1_score
 
+from experiments.exports import Exports
 from experiments.run_adversarial import CLASSICAL, FittedZoo
+from experiments.tuned_file import add_tuned_file_args, load_tuned_file, run_name
 from qgridbench.attacks.evasion import pgd
 from qgridbench.data.preprocess import load_processed
 from qgridbench.features.reduce import build_preprocessor
@@ -52,10 +55,13 @@ ENCODING = "zz"
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    add_tuned_file_args(ap)
+    args = ap.parse_args()
     cfg_adv = load_yaml(REPO_ROOT / "configs" / "adversarial.yaml")
     cfg_q = load_yaml(REPO_ROOT / "configs" / "quantum.yaml")
     subset_cap = cfg_q["qkernel"]["subset_cap"]
-    best_params = json.loads((REPO_ROOT / "results" / "adv_best_params_binary_q8.json").read_text())
+    bp_rel, best_params = load_tuned_file(args.best_params, "binary", 8)
 
     # raw table + the SAME frozen pipeline the study uses (fit on train only)
     Xraw, y, splits = load_processed("binary")
@@ -95,17 +101,15 @@ def main():
 
     families = CLASSICAL + ["qsvm", "vqc"]
 
-    def macro_f1(zoo, X):
-        """Macro-F1 of every family on one feature matrix, scored against the same labels."""
-        return {
-            f: float(f1_score(yte, zoo.predict_proba(f, X).argmax(1), average="macro"))
-            for f in families
-        }
-
-    with RunDir("probe_physical_realizability_binary_q8", config={"eps": EPS}, seeds=SEEDS) as run:
+    with RunDir(
+        run_name("probe_physical_realizability_binary_q8", args.run_tag),
+        config={"eps": EPS, "best_params": bp_rel},
+        seeds=SEEDS,
+    ) as run:
         per_seed = []
+        ex = Exports("binary", bp_rel)
         for s in SEEDS:
-            rng = spawn_rng(s, "adv")
+            rng = spawn_rng(s, ex.stream("adv"))
             reg = prepare_regime("binary", "pca", n_components=8, seed=0)
             zoo = FittedZoo(reg, ENCODING, 8, s, subset_cap, best_params)
             gp = zoo.grad_provider("mlp")
@@ -142,12 +146,16 @@ def main():
             # what the rounding costs the attacker in budget terms
             eps_after = np.abs(Z_round - Xte).max(axis=1) / scale.max()
 
-            f1 = {
-                "clean": macro_f1(zoo, Xte),
-                "pgd": macro_f1(zoo, Xadv),
-                "pgd_roundtrip": macro_f1(zoo, Z_trip),
-                "pgd_rounded": macro_f1(zoo, Z_round),
-            }
+            f1 = ex.score(
+                s,
+                {"clean": Xte, "pgd": Xadv, "pgd_roundtrip": Z_trip, "pgd_rounded": Z_round},
+                families,
+                zoo.predict_proba,
+                yte,
+                ev_idx,
+                lambda yy, p: float(f1_score(yy, p.argmax(1), average="macro")),
+                {"pgd": "mlp", "pgd_roundtrip": "mlp", "pgd_rounded": "mlp"},
+            )
             rec = {
                 "f1": f1,
                 "raw_footprint": {
@@ -184,6 +192,7 @@ def main():
                 for f in families
             }
             log.info("seed %d | f1 pgd vs rounded: %s", s, rounded_triples)
+        ex.write(run.path)
         run.write_json("results.json", {"per_seed": per_seed, "eps": EPS})
         print(f"-> {run.path}")
 
