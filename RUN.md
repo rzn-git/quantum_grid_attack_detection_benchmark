@@ -300,13 +300,33 @@ python -m experiments.run_hopskipjump_restarts 5 mlp lgbm --max-iter 40 --init-e
 ```bash
 python -m experiments.read_hsj_query_sweep
 ```
+14k. The angle-scaling control of the quantum kernels (the paper's angle-scaling subsection
+    and the "Angle scaling" row of its other-checks table). One job per arm and encoding; the
+    `minmax` arm is the control and must return the published score. Arms `minmax`, `clip` and
+    `quantile` at 8 dimensions, `minmax` and `quantile` at 12 and 16; encodings `zz` and
+    `angle_ry`. A 16-dimension job holds about 3 GB and takes one to two hours, so run those
+    two at a time. The reader writes the registered verdict of one dimensionality; name its
+    run in `experiments/other_checks.yaml`.
+```bash
+python -m experiments.run_angle_scaling --arm quantile --encoding zz --qubits 8 --threads 3
+```
+```bash
+python -m experiments.run_angle_scaling --read --qubits 8
+```
+14l. The adjacent-row share of near-copies (the caption of the paper's split figure). The run
+    stores the share of near-copies whose nearest training row is at most 1, 2, 3 or 5
+    positions away in the same file.
+```bash
+python -m experiments.run_file_row_order
+```
 
 ## Reporting artifacts
 
 15. Generate every table, figure, and statistic from `results/runs/` — the only writer of
     the generated exhibits; never hand-edit them. It needs the pooled and worst-radius runs
-    of step 14g, the replication runs of step 14h, the training-draw runs of step 14i and
-    the sweep reader's run of step 14j, and stops with the name of a run it cannot find.
+    of step 14g, the replication runs of step 14h, the training-draw runs of step 14i,
+    the sweep reader's run of step 14j and the angle-scaling verdict runs of step 14k, and
+    stops with the name of a run it cannot find.
 ```bash
 python -m experiments.make_report
 ```

@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use QuantumGridBench, please cite the accompanying paper and this software."
 title: "QuantumGridBench: Hybrid Quantum-Classical ML Benchmark for Cyberattack Detection in Smart Grids"
-version: 2.0.0
-date-released: "2026-10-31"
+version: 3.0.0
+date-released: "2026-11-23"
 authors:
   - family-names: "Islam"
     given-names: "Md Rezwanul"
@@ -26,7 +26,7 @@ preferred-citation:
       given-names: "ASM"
       affiliation: "University of Liberal Arts Bangladesh"
       orcid: "https://orcid.org/0000-0002-4137-9374"
-  title: "Benchmarking Quantum Machine Learning for Power-System Attack Detection: Evaluation Choices Decide the Outcome Before the Models Do"
+  title: "Benchmarking Quantum Machine Learning for Power-System Attack Detection: Evaluation Choices Can Decide the Outcome"
   year: 2026
   month: 8
   doi: "10.48550/arXiv.2608.15617"

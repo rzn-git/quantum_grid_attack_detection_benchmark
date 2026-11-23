@@ -18,8 +18,8 @@ rznislam@gmail.com
 
 This repository is the reproducibility package for:
 
-> Md Rezwanul Islam, *Benchmarking Quantum Machine Learning for Power-System Attack
-> Detection: Evaluation Choices Decide the Outcome Before the Models Do*, 2026.
+> Md Rezwanul Islam and ASM Shihavuddin, *Benchmarking Quantum Machine Learning for
+> Power-System Attack Detection: Evaluation Choices Can Decide the Outcome*, 2026.
 > [arXiv:2608.15617](https://arxiv.org/abs/2608.15617) \[cs.LG\],
 > doi:[10.48550/arXiv.2608.15617](https://doi.org/10.48550/arXiv.2608.15617).
 
