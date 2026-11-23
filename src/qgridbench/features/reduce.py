@@ -79,3 +79,50 @@ class AngleScaler:
         # clip: val/test values outside the train min/max would otherwise exceed
         # [-pi, pi] and wrap the rotation angles (documented, deliberate)
         return np.clip(self._mm.transform(Z), ANGLE_RANGE[0], ANGLE_RANGE[1])
+
+
+class ClippedAngleScaler:
+    """Each component clipped to two train percentiles, then MinMax into [-pi, pi].
+
+    An arm of the angle-scaling control (experiment `angle_scaling`): the shipped
+    `AngleScaler` gives the angle range to the extreme train values, so a heavy-tailed
+    component leaves its bulk in a few percent of the range. No shipped model uses this.
+    """
+
+    def __init__(self, lo_pct: float = 1.0, hi_pct: float = 99.0):
+        self.lo_pct, self.hi_pct = lo_pct, hi_pct
+        self._mm = MinMaxScaler(feature_range=ANGLE_RANGE)
+
+    def fit(self, Z_train: np.ndarray) -> ClippedAngleScaler:
+        self.lo_, self.hi_ = np.percentile(Z_train, [self.lo_pct, self.hi_pct], axis=0)
+        self._mm.fit(np.clip(Z_train, self.lo_, self.hi_))
+        return self
+
+    def transform(self, Z: np.ndarray) -> np.ndarray:
+        scaled = self._mm.transform(np.clip(Z, self.lo_, self.hi_))
+        return np.clip(scaled, ANGLE_RANGE[0], ANGLE_RANGE[1])
+
+
+class QuantileAngleScaler:
+    """Each component mapped through its train quantiles to a uniform law on [-pi, pi].
+
+    The second arm of the angle-scaling control. No shipped model uses this.
+    """
+
+    def __init__(self, n_quantiles: int = 1000, seed: int = 0):
+        from sklearn.preprocessing import QuantileTransformer
+
+        self._qt = QuantileTransformer(
+            n_quantiles=n_quantiles,
+            output_distribution="uniform",
+            subsample=None,
+            random_state=seed,
+        )
+
+    def fit(self, Z_train: np.ndarray) -> QuantileAngleScaler:
+        self._qt.fit(Z_train)
+        return self
+
+    def transform(self, Z: np.ndarray) -> np.ndarray:
+        lo, hi = ANGLE_RANGE
+        return np.clip(lo + (hi - lo) * self._qt.transform(Z), lo, hi)

@@ -30,7 +30,7 @@
       # the sweep trains every depth at one fixed setting (run_ablations.vqc_depth_sweep:
       # learning rate 0.05, batch 64, at most 40 epochs, the 2000-row subset, ten seeds),
       # so its depth-6 score is not the tuned VQC's 0.514 of the matched-contest table
-      setting: VQC at depths 2, 4, and 6, fixed training settings
+      setting: VQC at depths 2, 4, and 6, one untuned setting
       reading: "macro-F1 <3>, <4>, <5> (seed spread up to <6>); gradient variance <0>, <1>, <2>: no collapse"
       values:
         - {run: 20260813T173954Z_ablations_binary_q8, file: vqc_depth_sweep.json, key: depth_2/grad_norm_var_mean, fmt: ".5f", expect: "0.00196"}
@@ -44,7 +44,9 @@
       check: Training rows
       # a sentence, not a list of four numbers: the fifth blind read could not decode the
       # earlier cell (reports/readability_review_20261121T070054Z, blocking item 4)
-      setting: every model trained on 250 or 2000 rows
+      # three models only (the run's file holds xgb_full, qkernel_angle_ry and vqc): the cell
+      # said "every model" until the number audit of 2026-11-22
+      setting: three models, 250 to 2000 rows (two shown)
       reading: >-
         full-feature XGBoost leads the VQC by <0> at 250 rows and <1> at 2000, and the
         RY-angle QSVM by <2> and <3>
@@ -53,6 +55,19 @@
         - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/2000/mean - vqc/2000/mean", fmt: ".3f", expect: "0.118"}
         - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/250/mean - qkernel_angle_ry/250/mean", fmt: ".3f", expect: "0.116"}
         - {run: 20261118T160923Z_ablations_binary_q8_vqc_table1, file: data_efficiency_vqc_table1.json, key: "xgb_full/2000/mean - qkernel_angle_ry/2000/mean", fmt: ".3f", expect: "0.121"}
+    - id: angle_scaling
+      check: Angle scaling
+      # the registered control of the min-max angle scaling (experiment angle_scaling, decision
+      # log 2026-11-22T18:35Z and 18:56Z): each QSVM retuned under a quantile scaling
+      setting: quantile angle scaling, both QSVMs retuned
+      reading: RY-angle <0> to <1>; ZZ <2> to <3> (XGBoost <4>)
+      values:
+        - {run: 20261122T193519Z_angle_scaling_verdict_binary_q8, file: results.json, key: scores/angle_ry/minmax/test, fmt: ".3f", expect: "0.527"}
+        - {run: 20261122T193519Z_angle_scaling_verdict_binary_q8, file: results.json, key: scores/angle_ry/quantile/test, fmt: ".3f", expect: "0.580"}
+        - {run: 20261122T193519Z_angle_scaling_verdict_binary_q8, file: results.json, key: scores/zz/minmax/test, fmt: ".3f", expect: "0.564"}
+        - {run: 20261122T193519Z_angle_scaling_verdict_binary_q8, file: results.json, key: scores/zz/quantile/test, fmt: ".3f", expect: "0.577"}
+        # the ten-seed mean of the matched contest (the verdict run's own key was the three-seed one)
+        - {run: merged_rq1_binary_pca8, file: results.json, key: xgb/aggregate/macro_f1/mean, fmt: ".3f", expect: "0.597"}
 
 - group: Other checks
   meaning: reference
@@ -81,8 +96,8 @@
         - {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/evasion/clean/qsvm", agg: mean, minus: {run: 20261117T075906Z_adversarial_binary_q8_vqc_table1, file: results.json, key: "per_seed/*/sensor_noise/qsvm/10", agg: mean}, fmt: ".2f", sign: positive, expect: "0.08"}
     - id: latency
       check: Latency (simulated)
-      setting: per sample; slower than logistic regression by
-      reading: about <0>$\times$ (VQC), <1>$\times$ (RY-angle QSVM), <2>$\times$ (ZZ)
+      setting: per sample, against logistic regression
+      reading: slower by about <0>$\times$ (VQC), <1>$\times$ (RY-angle), <2>$\times$ (ZZ)
       values:
         - {run: 20260813T201901Z_quantum_vqc_binary_q8, file: results.json, key: vqc/aggregate/infer_latency_s/mean, over: {run: 20260813T064540Z_classical_binary_pca8, file: results.json, key: logreg/aggregate/infer_latency_s/mean}, fmt: count2, expect: "1900"}
         - {run: 20260813T071427Z_quantum_qkernel_binary_q8, file: results.json, key: angle_ry/aggregate/infer_latency_s/mean, over: {run: 20260813T064540Z_classical_binary_pca8, file: results.json, key: logreg/aggregate/infer_latency_s/mean}, fmt: count2, expect: "31000"}

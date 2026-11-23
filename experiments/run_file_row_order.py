@@ -177,6 +177,11 @@ def main() -> None:
         "leak_same_file_frac": float(same_file[leak].mean()),
         "leak_same_file_within_window_frac": float(near[leak].mean()),
         "leak_same_file_median_gap": float(np.median(gap[leak & same_file])),
+        # share of near-copies whose nearest training row is the same file's row at most g
+        # positions away (g = 1 is the adjacent row); the paper quotes g = 1 and the window
+        "leak_same_file_gap_at_most_frac": {
+            str(g): float((same_file & (gap <= g))[leak].mean()) for g in (1, 2, 3, 5)
+        },
         "nonleak_same_file_within_window_frac": float(near[~leak].mean()),
     }
 

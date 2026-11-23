@@ -877,7 +877,10 @@ def split_leak_figure(
     held_all = [near_held] + [[u["per_class"][c]["recall"] for u in arms] for c in classes]
     held_c = [float(np.mean(v)) for v in held_all]
     held_c_sd = [float(np.std(v)) for v in held_all]
-    xc = np.arange(len(row_c))
+    # the first group stands apart: its held-out label carries a spread and needs the room, and a
+    # held-out label starts at its own bar's left edge so that it never lies on the taller
+    # row-level bar beside it (blind read of 2026-11-22: two labels lay across a bar)
+    xc = np.array([0.0, 1.3, 2.4])
     a3.bar(xc - w / 2, row_c, w, color=MEANING["choice"])
     a3.bar(xc + w / 2, held_c, w, yerr=held_c_sd, capsize=2, color=MEANING["control"])
     for i in range(len(row_c)):
@@ -893,12 +896,12 @@ def split_leak_figure(
         )
         a3.annotate(
             held_label,
-            (xc[i] + w / 2, held_c[i] + held_c_sd[i] + 0.02),
-            ha="center",
+            (xc[i] + 0.02, held_c[i] + held_c_sd[i] + 0.02),
+            ha="left",
             fontsize=LABEL_PT,
         )
     a3.set_xticks(xc, ["Near-\ncopies", "Natural\nrecall", "Attack\nrecall"])
-    a3.set_xlim(-0.62, len(row_c) - 0.38)  # room for the first value label
+    a3.set_xlim(-0.62, xc[-1] + 0.62)  # room for the first and the last value label
     a3.set_ylim(0, 1.17)
     a3.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
     a3.set_ylabel("Share of rows (MSU/ORNL)")

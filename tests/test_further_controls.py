@@ -238,7 +238,8 @@ def test_other_checks_table_resolves_every_value_and_puts_the_setting_second():
         pytest.skip("the research run archive (results/runs) is not on this machine")
     lines, resolved, sources = fc.build(fc.OTHER_SPEC, last="setting", order="last-reading")
     rows = [ln for ln in lines if not ln.startswith("\\rowcolor")]
-    assert len(rows) == 13 and len(resolved) == 48
+    # 14 rows and 53 values since the angle-scaling row (five values) of 2026-11-22
+    assert len(rows) == 14 and len(resolved) == 53
     # "the other three models lose nothing" under sensor noise is words in the spec, so
     # the run is read here: clean minus noisy is not positive for any of the three
     for model in ("logreg", "mlp", "vqc"):
@@ -251,9 +252,10 @@ def test_other_checks_table_resolves_every_value_and_puts_the_setting_second():
         clean = {**noisy, "key": f"per_seed/*/evasion/clean/{model}", "minus": noisy}
         cost, _ = fc.resolve_value(clean)
         assert cost <= 0, model
-    # the depth row gives the accuracy at each depth and says the settings are fixed
+    # the depth row gives the accuracy at each depth and says the setting is one untuned one
+    # (so its depth-6 score is not read as the tuned VQC's of the matched-contest table)
     depth = next(r for r in rows if r.startswith("Depth"))
-    assert "fixed training settings" in depth
+    assert "one untuned setting" in depth
     assert all(f"${n}$" in depth for n in ("0.45", "0.47", "0.44"))
     assert rows[0].startswith("Shots & tuned ZZ QSVM") and "$0.058$" in rows[0]
     # the training-rows row gives the lead over both quantum models

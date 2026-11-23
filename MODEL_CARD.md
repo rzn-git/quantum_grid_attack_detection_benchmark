@@ -2,7 +2,7 @@
 
 Current measured state of the benchmarked systems. These numbers are the ones reported in
 Md Rezwanul Islam, *Benchmarking Quantum Machine Learning for Power-System Attack Detection:
-Evaluation Choices Decide the Outcome Before the Models Do*,
+Evaluation Choices Can Decide the Outcome*,
 [arXiv:2608.15617](https://arxiv.org/abs/2608.15617) (2026).
 
 **Every number below is generated, not typed.** The tables live in marker-fenced blocks
@@ -351,8 +351,8 @@ Every figure resolves to a `results/runs/<UTC>_<name>/` dir carrying resolved co
 `data/processed/splits_<variant>.npz` (split seed 1337).
 
 <!-- BEGIN GENERATED: provenance -->
-- Generated: **2026-11-22T17:02:33Z**
-- Code version: `2e62932`
+- Generated: **2026-11-22T21:10:02Z**
+- Code version: `3864b99`
 - Regenerate with `python -m experiments.make_report` — every figure above is read
   from `paper/tables/*.csv`, which is itself written only from `results/runs/`.
 <!-- END GENERATED: provenance -->
